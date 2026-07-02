@@ -81,23 +81,30 @@
   .brand-name { font-size: 13px; font-weight: 600; letter-spacing: -0.2px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .brand-sub  { font-size: 11px; color: var(--text-muted); font-weight: 400; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-  .topbar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .topbar-right { 
+  display: flex; 
+  align-items: center; 
+  gap: 8px; 
+  flex-shrink: 0; 
+}
 
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 14px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius);
-    font-size: 13px; font-weight: 500;
-    text-decoration: none;
-    cursor: pointer;
-    transition: background 0.15s, transform 0.1s;
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
+.btn-topbar {  
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 13px; 
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
   .mobile-menu-btn {
     display: none;
@@ -467,7 +474,7 @@
     <div class="sidebar-footer">
       <img src="imagenes/logo_programix_navejl.png" alt="Programix NaveJL" class="sidebar-footer-logo">
       <p>Versión 1.0 &nbsp;·&nbsp; Vigente desde 06/07/2026<br>
-      <a href="mailto:alfredo.naveju.lop@gmail.com">alfredo.naveju.lop@gmail.com</a></p>
+      <a href="https://programix-navejl.github.io/programix-navejl/" target="_blank">programix-navejl.github.io</a></p>
     </div>
   </aside>
 
