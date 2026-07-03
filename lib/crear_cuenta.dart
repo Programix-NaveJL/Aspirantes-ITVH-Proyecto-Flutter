@@ -19,14 +19,16 @@
 //      email" está desactivado, la sesión queda activa de inmediato
 //      (no depende de ningún correo ni SMTP).
 //   5. Intentar el upsert del perfil desde el cliente (best-effort —
-//      se ignora si falla por RLS; un trigger del servidor puede
-//      cubrir ese caso).
+//      se ignora si falla por RLS; el trigger handle_new_aspirante
+//      del servidor cubre ese caso).
 //   6. Navegar directo al Feed con la sesión ya activa.
 //
 // Secciones del formulario:
 //   • Datos personales  — nombre completo, usuario, ficha de aspirante
-//   • Información académica — carrera de interés (dropdown, catálogo
-//     ESTÁTICO de las 12 carreras del ITVH — no depende de Supabase)
+//   • Información académica — carrera de interés (dropdown cargado
+//     DINÁMICAMENTE desde la tabla `carreras` de Supabase — igual
+//     que en editar_perfil_aspirante.dart, ya que carrera_id es una
+//     FK real en perfiles_aspirantes, no texto libre)
 //   • Datos de acceso   — correo personal y contraseña
 //
 // Widgets internos:
@@ -73,27 +75,16 @@ class _RegisterScreenState extends State<RegisterScreen>
   final _fichaFocus    = FocusNode();
 
   // ── Selección de dropdown ─────────────────────────────────────
-  // Guarda directamente el nombre de la carrera (no un id/uuid),
-  // ya que el catálogo ahora es una lista estática en el cliente.
-  String? _carreraSeleccionada;
+  // Guarda el uuid (carrera_id) de la carrera seleccionada, no el
+  // nombre — la columna real en perfiles_aspirantes es una FK.
+  String? _carreraIdSeleccionada;
 
   // ── Catálogo de carreras del ITVH ────────────────────────────
-  // Lista fija: no se consulta ninguna tabla de Supabase para esto,
-  // por lo que el dropdown está disponible de inmediato (sin loader).
-  static const List<String> _carreras = [
-    'Ingeniería Ambiental',
-    'Ingeniería Bioquímica',
-    'Ingeniería Civil',
-    'Ingeniería en Ciencia de Datos',
-    'Ingeniería en Gestión Empresarial',
-    'Ingeniería en Sistemas Computacionales',
-    'Ingeniería en Tecnologías de la Información y Comunicaciones',
-    'Ingeniería Industrial',
-    'Ingeniería Informática',
-    'Ingeniería Petrolera',
-    'Ingeniería Química',
-    'Licenciatura en Administración',
-  ];
+  // Cargado dinámicamente desde la tabla `carreras` (igual que en
+  // editar_perfil_aspirante.dart), para que el id coincida siempre
+  // con la FK real y con lo que espera el trigger handle_new_aspirante.
+  List<Map<String, dynamic>> _carreras = [];
+  bool _cargandoCarreras = true;
 
   // ── Estado local ──────────────────────────────────────────────
   bool _loading = false;
@@ -132,6 +123,7 @@ class _RegisterScreenState extends State<RegisterScreen>
     ));
 
     _animController.forward();
+    _cargarCarreras();
   }
 
   @override
@@ -148,6 +140,30 @@ class _RegisterScreenState extends State<RegisterScreen>
     _fichaFocus.dispose();
     _animController.dispose();
     super.dispose();
+  }
+
+
+  // ─────────────────────────────────────────────────────────────
+  // CARGA DE CARRERAS (dinámica, desde la tabla `carreras`)
+  // ─────────────────────────────────────────────────────────────
+
+  Future<void> _cargarCarreras() async {
+    try {
+      final data = await Supabase.instance.client
+          .from('carreras')
+          .select('id, nombre')
+          .eq('activa', true)
+          .order('nombre');
+
+      if (!mounted) return;
+      setState(() {
+        _carreras         = (data as List).cast<Map<String, dynamic>>();
+        _cargandoCarreras = false;
+      });
+    } catch (e) {
+      debugPrint('RegisterScreen – error al cargar carreras: $e');
+      if (mounted) setState(() => _cargandoCarreras = false);
+    }
   }
 
 
@@ -194,7 +210,7 @@ class _RegisterScreenState extends State<RegisterScreen>
       _showError('La contraseña debe tener al menos 6 caracteres.');
       return;
     }
-    if (_carreraSeleccionada == null) {
+    if (_carreraIdSeleccionada == null) {
       _showError('Selecciona la carrera de tu interés.');
       return;
     }
@@ -229,11 +245,11 @@ class _RegisterScreenState extends State<RegisterScreen>
       }
 
       // Crear el usuario en Supabase Auth. Se envían los datos del
-      // perfil como metadata para que un trigger del servidor pueda
-      // crear la fila en `perfiles_aspirantes` sin depender de que
-      // el cliente tenga sesión activa (correo aún sin confirmar).
-      // 'carrera' ahora es el nombre tal cual (texto), no un id/uuid,
-      // ya que el catálogo es una lista fija en el cliente.
+      // perfil como metadata para que el trigger handle_new_aspirante
+      // pueda crear la fila en `perfiles_aspirantes` sin depender de
+      // que el cliente tenga sesión activa (correo aún sin confirmar).
+      // 'carrera_id' es el uuid real de la tabla `carreras`, tal como
+      // lo espera el trigger: (raw_user_meta_data->>'carrera_id')::uuid
       final res = await Supabase.instance.client.auth.signUp(
         email:    email,
         password: password,
@@ -241,7 +257,7 @@ class _RegisterScreenState extends State<RegisterScreen>
           'nombre':         nombre,
           'nombre_usuario': usuario,
           'numero_ficha':   ficha,
-          'carrera':        _carreraSeleccionada,
+          'carrera_id':     _carreraIdSeleccionada,
         },
       );
 
@@ -251,7 +267,7 @@ class _RegisterScreenState extends State<RegisterScreen>
       // Intento best-effort de crear/actualizar el perfil desde el
       // cliente. Si la confirmación de correo está habilitada y el
       // cliente no tiene sesión todavía, esto puede fallar por RLS;
-      // en ese caso el trigger del servidor se encarga.
+      // en ese caso el trigger handle_new_aspirante se encarga.
       try {
         await Supabase.instance.client.from('perfiles_aspirantes').upsert({
           'id':              uid,
@@ -259,7 +275,7 @@ class _RegisterScreenState extends State<RegisterScreen>
           'nombre_usuario':  usuario,
           'email':           email,
           'numero_ficha':    ficha,
-          'carrera':         _carreraSeleccionada,
+          'carrera_id':      _carreraIdSeleccionada,
         });
       } catch (_) {
         // Se ignora — el trigger del servidor debe cubrir este caso.
@@ -536,7 +552,7 @@ class _RegisterScreenState extends State<RegisterScreen>
                                   _GlassField(
                                     controller:      _fichaController,
                                     focusNode:       _fichaFocus,
-                                    hint:            'Número de ficha (ej. 260001)',
+                                    hint:            'Número de ficha',
                                     icon:            Icons.numbers_rounded,
                                     keyboardType:    TextInputType.number,
                                     textInputAction: TextInputAction.next,
@@ -548,16 +564,26 @@ class _RegisterScreenState extends State<RegisterScreen>
                                   _sectionLabel('Información académica'),
                                   const SizedBox(height: 10),
 
-                                  // Catálogo estático: las 12 carreras del ITVH
-                                  // se muestran de inmediato, sin loader ni
-                                  // consulta a Supabase.
+                                  // Catálogo dinámico: cargado desde la
+                                  // tabla `carreras` de Supabase. Mientras
+                                  // carga, el dropdown queda deshabilitado
+                                  // (sin items) y con hint de "Cargando...".
                                   _GlassDropdown<String>(
-                                    hint:      'Carrera de tu interés',
+                                    hint: _cargandoCarreras
+                                        ? 'Cargando carreras...'
+                                        : 'Carrera de tu interés',
                                     icon:      Icons.school_outlined,
-                                    value:     _carreraSeleccionada,
-                                    items:     _carreras,
-                                    onChanged: (v) =>
-                                        setState(() => _carreraSeleccionada = v),
+                                    value:     _carreraIdSeleccionada,
+                                    items:     _carreras
+                                        .map((c) => c['id'] as String)
+                                        .toList(),
+                                    itemLabel: (id) => _carreras.firstWhere(
+                                          (c) => c['id'] == id,
+                                    )['nombre'] as String,
+                                    onChanged: _cargandoCarreras
+                                        ? null
+                                        : (v) => setState(
+                                            () => _carreraIdSeleccionada = v),
                                   ),
                                   const SizedBox(height: 20),
 
@@ -843,7 +869,7 @@ class _GlassDropdown<T> extends StatelessWidget {
   final T?               value;
   final List<T>          items;
   final String Function(T)? itemLabel;
-  final ValueChanged<T?> onChanged;
+  final ValueChanged<T?>? onChanged;
 
   const _GlassDropdown({
     required this.hint,

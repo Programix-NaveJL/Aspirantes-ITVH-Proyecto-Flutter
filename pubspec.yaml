@@ -133,6 +133,10 @@ flutter_native_splash:
 # El ícono adaptativo de Android (API 26+) usa capa de fondo de color
 # sólido y capa de primer plano con el logo, para compatibilidad con
 # las diferentes formas de ícono del launcher.
+#
+# NOTA: image_path / adaptive_icon_foreground usan jaguar_foreground.png
+#   (logo oficial de "Aspirantes ITVH"), NO splash_foreground.png —
+#   ese último es exclusivo de la pantalla de bienvenida, arriba.
 # ─────────────────────────────────────────────────────────────────
 flutter_launcher_icons:
   android: "launcher_icon"
@@ -188,5 +192,4 @@ flutter:
     - assets/icons/tiktok.png
 
     # ── Íconos de la app ─────────────────────────────────────────
-    - assets/icons/jaguar_foreground.png
     - assets/icons/splash_foreground.png

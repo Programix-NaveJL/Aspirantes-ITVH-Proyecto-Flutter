@@ -38,6 +38,23 @@
 //   siquiera después de que el usuario lo aceptara. Ahora se hace
 //   setState() en cuanto se confirma el permiso, forzando un rebuild
 //   del GoogleMap con el flag ya en true.
+//
+// ← FIX marcadores rojos en Web:
+//   En Flutter Web, el plugin de google_maps necesita conocer el
+//   tamaño (`size`) del BitmapDescriptor de forma explícita — en
+//   Android se infiere solo desde el PNG, pero en web, si no se
+//   provee, el marcador cae al ícono rojo por defecto en lugar del
+//   "globito" institucional dibujado con Canvas. Se agregó el
+//   parámetro `size` en `_crearMarkerEdificio`. Es inofensivo en
+//   Android (el SDK nativo lo ignora si ya puede leer el bitmap).
+//
+// ← FIX sensibilidad de gestos en Web:
+//   `rotateGesturesEnabled`, `tiltGesturesEnabled` y el
+//   `EagerGestureRecognizer` se sienten demasiado bruscos en
+//   pantallas táctiles dentro de un navegador (el navegador también
+//   interpreta gestos, y compiten con el plugin). Se condicionaron
+//   con `kIsWeb` para suavizar la experiencia solo en web, sin tocar
+//   el comportamiento ya afinado en Android nativo.
 // ═════════════════════════════════════════════════════════════════
 
 import 'dart:convert';
@@ -211,6 +228,12 @@ class _UbicaTecScreenState extends State<UbicaTecScreen> {
   ///
   /// Se usa canvas en lugar de un widget porque BitmapDescriptor
   /// solo acepta bytes PNG — no widgets de Flutter.
+  ///
+  /// ← FIX Web: se agrega `size` al construir el BitmapDescriptor.
+  /// En Flutter Web el plugin necesita las dimensiones explícitas del
+  /// bitmap; sin ellas, descarta el ícono custom y usa el marcador
+  /// rojo por defecto. En Android este parámetro es innecesario pero
+  /// inofensivo (el SDK nativo ya lee el tamaño real del PNG).
   Future<gmaps.BitmapDescriptor> _crearMarkerEdificio(String nombre) async {
     const double paddingH       = 12;
     const double paddingV       = 8;
@@ -276,14 +299,23 @@ class _UbicaTecScreenState extends State<UbicaTecScreen> {
 
     // Convertir el dibujo a PNG y empaquetarlo como BitmapDescriptor.
     final picture  = recorder.endRecording();
+    final double bmpWidth  = bubbleWidth + 4;
+    final double bmpHeight = totalHeight + 4;
     final img      = await picture.toImage(
-      (bubbleWidth + 4).toInt(),
-      (totalHeight + 4).toInt(),
+      bmpWidth.toInt(),
+      bmpHeight.toInt(),
     );
     final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
     final bytes    = byteData!.buffer.asUint8List();
 
-    return gmaps.BitmapDescriptor.bytes(bytes);
+    return gmaps.BitmapDescriptor.bytes(
+      bytes,
+      // ← NUEVO: requerido en Web para que el ícono custom se
+      // muestre en vez del pin rojo por defecto. Se ignora sin
+      // problema en Android.
+      width: bmpWidth,
+      height: bmpHeight,
+    );
   }
 
 
@@ -665,10 +697,12 @@ class _UbicaTecScreenState extends State<UbicaTecScreen> {
         children: [
 
           // ── Mapa de Google Maps ──────────────────────────
-          // Se usa EagerGestureRecognizer para que el mapa
-          // capture gestos de scroll aunque esté dentro de un
-          // Stack, evitando conflictos con el SingleChildScrollView
-          // de la pantalla padre si lo hubiera en el futuro.
+          // Se usa EagerGestureRecognizer (solo fuera de web) para
+          // que el mapa capture gestos de scroll aunque esté dentro
+          // de un Stack, evitando conflictos con el
+          // SingleChildScrollView de la pantalla padre si lo hubiera
+          // en el futuro. En web se deja vacío para que el manejo de
+          // gestos por defecto del navegador se sienta más natural.
           Positioned.fill(
             child: gmaps.GoogleMap(
               initialCameraPosition: gmaps.CameraPosition(
@@ -687,17 +721,40 @@ class _UbicaTecScreenState extends State<UbicaTecScreen> {
               myLocationButtonEnabled:  _permisoUbicacionConcedido,
               scrollGesturesEnabled:    true,
               zoomGesturesEnabled:      true,
-              rotateGesturesEnabled:    true,
-              tiltGesturesEnabled:      true,
+              // ← CAMBIADO (solo Web): en pantallas táctiles dentro
+              // de un navegador, rotar/inclinar con dos dedos se
+              // siente demasiado sensible y compite con los gestos
+              // propios del navegador. En Android nativo se dejan
+              // habilitados como antes.
+              rotateGesturesEnabled:    kIsWeb ? false : true,
+              tiltGesturesEnabled:      kIsWeb ? false : true,
               // Zoom acotado: < 15 el campus se pierde;
               // > 20 el mapa híbrido pierde calidad.
               minMaxZoomPreference: const gmaps.MinMaxZoomPreference(
                   15.0, 20.0),
-              gestureRecognizers: {
+              // ← CAMBIADO (solo Web): se deja el set de gesture
+              // recognizers vacío para que el navegador maneje los
+              // gestos táctiles de forma nativa y menos brusca. En
+              // Android se conserva el EagerGestureRecognizer.
+              gestureRecognizers: kIsWeb
+                  ? const {}
+                  : {
                 Factory<OneSequenceGestureRecognizer>(
                       () => EagerGestureRecognizer(),
                 ),
               },
+              // ← NUEVO (solo Web): por defecto, el plugin web usa el
+              // modo "cooperative" de Google Maps, que exige DOS dedos
+              // para mover el mapa (pensado para no "atrapar" el scroll
+              // de la página cuando hay varios mapas embebidos). Como
+              // esta pantalla es de mapa a pantalla completa, se cambia
+              // a "greedy" para que se pueda mover con un solo dedo,
+              // igual que en Android. Este parámetro no existe/aplica
+              // fuera de web, así que se deja en su valor por defecto
+              // ahí.
+              webGestureHandling: kIsWeb
+                  ? gmaps.WebGestureHandling.greedy
+                  : null,
               onMapCreated: (gmaps.GoogleMapController controller) {
                 _mapController = controller;
               },

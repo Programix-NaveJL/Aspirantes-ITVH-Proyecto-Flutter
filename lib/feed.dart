@@ -3,10 +3,20 @@
 //
 // Pantalla raíz de la app "Aspirantes ITVH".
 // Versión de SOLO VISUALIZACIÓN: aún no existe backend/lógica para
-// esta app, por lo que no hay llamadas a Supabase (salvo signOut), ni
-// Realtime, ni navegación real a pantallas externas. Todo lo que en
-// Comunidad ITVH dependía de datos remotos aquí se muestra con
+// esta app, por lo que no hay llamadas a Supabase (salvo signOut y,
+// ahora, la lectura de la foto de perfil para el avatar del AppBar),
+// ni Realtime, ni navegación real a pantallas externas. Todo lo que
+// en Comunidad ITVH dependía de datos remotos aquí se muestra con
 // placeholders estáticos o con un SnackBar "Próximamente".
+//
+// NUEVO: sistema de notificaciones en vivo, estilo iOS —
+//   • Campanita en el AppBar con badge rojo del conteo de no leídas.
+//   • Banner deslizante que aparece arriba de la pantalla cuando
+//     llega una notificación nueva (INSERT en tiempo real), con
+//     avatar/nombre/mensaje del remitente, se auto-oculta a los 4s
+//     y es tocable para ir directo a PaginaNotificaciones.
+//   • Todo alimentado por un canal de Supabase Realtime suscrito a
+//     la tabla `notificaciones` filtrado por destinatario_id.
 //
 // Responsabilidades:
 //   • Renderizar el TabBar con 3 pestañas fijas, propias del perfil
@@ -14,8 +24,10 @@
 //       1. Comunidad Nuevo Ingreso
 //       2. Mi Perfil Aspirante
 //       3. UbicaTecNM Campus Villahermosa
-//   • Mostrar un AppBar con el logo institucional (claro/oscuro) y un
-//     avatar placeholder (sin datos de perfil reales todavía).
+//   • Mostrar un AppBar con el logo institucional (claro/oscuro), la
+//     campanita de notificaciones, y un avatar que refleja la foto
+//     de perfil real del usuario (con fallback al ícono genérico si
+//     no tiene foto o si falla la carga).
 //   • Construir el Drawer lateral con las mismas secciones visuales
 //     que Comunidad ITVH (Plantel, Plataformas, Preferencias), pero
 //     sin navegación real: cada opción muestra un aviso de "Próximamente".
@@ -25,21 +37,49 @@
 //   • Cerrar sesión (Supabase Auth signOut) desde el Drawer — al
 //     hacerlo, AuthGate en main.dart detecta el cambio y regresa
 //     automáticamente a LoginScreen.
+//   • Escuchar irATabNotifier (navegacion_global.dart) para deslizar
+//     el TabController a una pestaña específica desde cualquier parte
+//     de la app — p. ej. al tocar tu propio avatar en una tarjeta de
+//     publicación desde una pantalla empujada encima del feed, se
+//     hace popUntil hasta aquí y se anima directo a "Mi Perfil" en
+//     vez de apilar otra pantalla de perfil con botón de regreso.
+//
+// Avatar del AppBar:
+//   Se carga una sola vez en initState() vía _cargarFotoPerfil(), que
+//   consulta la fila completa de perfiles_aspirantes del usuario
+//   actual y usa resolverUrlPerfil() (mismo helper que
+//   editar_perfil_aspirante.dart) para obtener la URL CDN final.
+//   Al volver de EditarPerfilAspirante (donde el usuario puede
+//   cambiar su foto), se vuelve a cargar automáticamente para que el
+//   avatar del AppBar quede sincronizado sin necesidad de reiniciar
+//   la app.
 //
 // Widgets internos:
 //   • _TabItem                    — modelo de datos para cada pestaña
 //   • _PlaceholderTabBody          — cuerpo genérico para cada tab
 // ═════════════════════════════════════════════════════════════════
 
+import 'dart:async';
+
 import 'package:aspirantes_itvh_app/ubica_tecnm/ubica_tecnm_itvh.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'comunidad_aspirantes/page_home_social.dart';
+import 'comunidad_aspirantes/pagina_notificaciones.dart';
+import 'drawer/ajustes_screen.dart';
+import 'drawer/conoce_plantel.dart';
+import 'drawer/historia_plantel_screen.dart';
+import 'drawer/oferta_educativa.dart';
 import 'main.dart';
+import 'mi_perfil_aspirante/editar_perfil_aspirante.dart';
 import 'mi_perfil_aspirante/mi_perfil_aspirante.dart';
+import 'mi_perfil_aspirante/navegacion_global.dart';
+import 'servicios_storage/url_helper.dart';
 
 class FeedAspirantes extends StatefulWidget {
   const FeedAspirantes({super.key});
@@ -56,6 +96,20 @@ class _FeedAspirantesState extends State<FeedAspirantes>
   // Índice de la pestaña activa. Se actualiza con el animation listener
   // para cambiar íconos filled/outlined sin esperar el snap final.
   int _currentTabIndex = 0;
+
+  // ── Foto de perfil (avatar del AppBar) ─────────────────────────
+  // Null mientras carga o si el usuario no tiene foto — en ambos
+  // casos el avatar cae al ícono genérico de persona.
+  String? _fotoUrl;
+
+  // ── Notificaciones (campanita + banner estilo iOS) ─────────────
+  int _notificacionesNoLeidas = 0;
+  RealtimeChannel? _canalNotificaciones;
+
+  // Datos de la notificación actualmente mostrada en el banner
+  // superior. Null = banner oculto.
+  Map<String, dynamic>? _bannerData;
+  Timer? _bannerTimer;
 
   // Pestañas fijas de la identidad "Aspirantes ITVH".
   // A diferencia de Comunidad ITVH, aquí no existe rol admin,
@@ -86,6 +140,7 @@ class _FeedAspirantesState extends State<FeedAspirantes>
   @override
   void initState() {
     super.initState();
+    print('TOKEN: ${Supabase.instance.client.auth.currentSession?.accessToken}');
     _tabController = TabController(length: _tabs.length, vsync: this);
 
     // Listener en la animación (no en index) para actualizar el ícono
@@ -96,12 +151,210 @@ class _FeedAspirantesState extends State<FeedAspirantes>
         setState(() => _currentTabIndex = index);
       }
     });
+
+    _cargarFotoPerfil();
+    _cargarConteoNoLeidas();
+    _suscribirseANotificaciones();
+
+    // Navegación global "ir a esta pestaña" — ver navegacion_global.dart.
+    // Típicamente disparada desde navegacion_perfil.dart al tocar tu
+    // propio avatar en cualquier parte de la app.
+    irATabNotifier.addListener(_escucharCambioDeTab);
   }
 
   @override
   void dispose() {
+    irATabNotifier.removeListener(_escucharCambioDeTab);
+    _canalNotificaciones?.unsubscribe();
+    _bannerTimer?.cancel();
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// Aplica el índice pedido por irATabNotifier y lo regresa a null
+  /// de inmediato — así, si alguien vuelve a pedir la misma pestaña
+  /// más tarde (p. ej. tocas tu avatar dos veces en sesiones
+  /// distintas de navegación), el listener se dispara de nuevo en
+  /// vez de quedarse "pegado" en un valor que no cambia.
+  void _escucharCambioDeTab() {
+    final index = irATabNotifier.value;
+    if (index == null || !mounted) return;
+    _tabController.animateTo(index);
+    irATabNotifier.value = null;
+  }
+
+
+  // ─────────────────────────────────────────────────────────────
+  // FOTO DE PERFIL (avatar del AppBar)
+  // ─────────────────────────────────────────────────────────────
+
+  /// Trae la fila completa del perfil del usuario actual y resuelve
+  /// la URL de su foto con resolverUrlPerfil() — mismo helper que usa
+  /// editar_perfil_aspirante.dart, para no duplicar lógica de
+  /// construcción de URL. Si falla o no hay foto, _fotoUrl queda en
+  /// null y el avatar cae al ícono genérico.
+  Future<void> _cargarFotoPerfil() async {
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null) return;
+
+    try {
+      final data = await Supabase.instance.client
+          .from('perfiles_aspirantes')
+          .select()
+          .eq('id', uid)
+          .maybeSingle();
+
+      if (!mounted || data == null) return;
+      setState(() => _fotoUrl = resolverUrlPerfil(data));
+    } catch (e) {
+      debugPrint('FeedAspirantes – error al cargar foto de perfil: $e');
+      // Se ignora — el avatar simplemente se queda con el ícono genérico.
+    }
+  }
+
+
+  // ─────────────────────────────────────────────────────────────
+  // NOTIFICACIONES (badge + banner en tiempo real)
+  // ─────────────────────────────────────────────────────────────
+
+  /// Cuenta cuántas notificaciones sin leer tiene el usuario actual.
+  /// Se llama al iniciar y cada vez que el canal Realtime detecta un
+  /// cambio en la tabla `notificaciones` (nuevo insert, o marcado
+  /// como leída desde otra pantalla).
+  Future<void> _cargarConteoNoLeidas() async {
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null) return;
+
+    try {
+      final data = await Supabase.instance.client
+          .from('notificaciones')
+          .select('id')
+          .eq('destinatario_id', uid)
+          .eq('leida', false);
+
+      if (!mounted) return;
+      setState(() => _notificacionesNoLeidas = (data as List).length);
+    } catch (e) {
+      debugPrint('FeedAspirantes – error al contar notificaciones: $e');
+    }
+  }
+
+  /// Escucha en tiempo real cambios en `notificaciones` para este
+  /// usuario. En INSERT: refresca el badge y dispara el banner
+  /// superior con los datos de quien la originó. En cualquier otro
+  /// evento (p. ej. UPDATE al marcar como leída desde
+  /// PaginaNotificaciones): solo refresca el badge.
+  void _suscribirseANotificaciones() {
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null) return;
+
+    _canalNotificaciones = Supabase.instance.client
+        .channel('notificaciones_feed_$uid')
+        .onPostgresChanges(
+      event: PostgresChangeEvent.insert,
+      schema: 'public',
+      table: 'notificaciones',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'destinatario_id',
+        value: uid,
+      ),
+      callback: (payload) {
+        _cargarConteoNoLeidas();
+        _mostrarBannerDesde(payload.newRecord);
+      },
+    )
+        .onPostgresChanges(
+      event: PostgresChangeEvent.update,
+      schema: 'public',
+      table: 'notificaciones',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'destinatario_id',
+        value: uid,
+      ),
+      callback: (payload) => _cargarConteoNoLeidas(),
+    )
+        .subscribe();
+  }
+
+  /// Resuelve el perfil de quien originó la notificación y muestra
+  /// el banner superior con esos datos. Se auto-oculta a los 4
+  /// segundos, reiniciando el temporizador si llega otra notificación
+  /// mientras el banner anterior seguía visible.
+  Future<void> _mostrarBannerDesde(Map<String, dynamic> fila) async {
+    final origenId = fila['origen_id'] as String?;
+    if (origenId == null || !mounted) return;
+
+    try {
+      final perfil = await Supabase.instance.client
+          .from('perfiles_aspirantes')
+          .select()
+          .eq('id', origenId)
+          .maybeSingle();
+
+      if (!mounted) return;
+
+      setState(() {
+        _bannerData = {
+          'tipo': fila['tipo'],
+          'nombre': perfil?['nombre'] as String? ?? 'Alguien',
+          'fotoUrl': perfil != null ? resolverUrlPerfil(perfil) : '',
+        };
+      });
+
+      _bannerTimer?.cancel();
+      _bannerTimer = Timer(const Duration(seconds: 4), () {
+        if (!mounted) return;
+        setState(() => _bannerData = null);
+      });
+    } catch (e) {
+      debugPrint('FeedAspirantes – error al mostrar banner: $e');
+    }
+  }
+
+  void _ocultarBanner() {
+    _bannerTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _bannerData = null);
+  }
+
+  Future<void> _abrirNotificaciones(bool isDark) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PaginaNotificaciones(isDark: isDark),
+      ),
+    );
+    // PaginaNotificaciones marca todo como leído al abrirse, así que
+    // al volver refrescamos el conteo (debería quedar en 0).
+    _cargarConteoNoLeidas();
+  }
+
+  String _textoNotif(String? tipo) {
+    switch (tipo) {
+      case 'like': return 'reaccionó a tu publicación';
+      case 'comentario': return 'comentó tu publicación';
+      case 'respuesta': return 'respondió a tu comentario';
+      case 'seguidor': return 'comenzó a seguirte';
+      case 'like_historia': return 'reaccionó a tu historia';
+      case 'comentario_historia': return 'comentó tu historia';
+      case 'like_comentario': return 'le gustó tu comentario';
+      default: return 'tiene una actualización para ti';
+    }
+  }
+
+  IconData _iconoNotif(String? tipo) {
+    switch (tipo) {
+      case 'like':
+      case 'like_historia':
+      case 'like_comentario': return CupertinoIcons.heart_fill;
+      case 'comentario':
+      case 'comentario_historia':
+      case 'respuesta': return CupertinoIcons.chat_bubble_fill;
+      case 'seguidor': return CupertinoIcons.person_add_solid;
+      default: return CupertinoIcons.bell_fill;
+    }
   }
 
 
@@ -147,143 +400,285 @@ class _FeedAspirantesState extends State<FeedAspirantes>
         final divColor = isDark ? Colors.white10 : Colors.black12;
         const accent   = Color(0xFF007AFF);
 
-        return Scaffold(
-          key: _scaffoldKey,
-          backgroundColor: isDark ? Colors.black : const Color(0xFFF2F2F7),
+        return Stack(
+          children: [
+            Scaffold(
+              key: _scaffoldKey,
+              backgroundColor: isDark ? Colors.black : const Color(0xFFF2F2F7),
 
-          drawer: _buildDrawer(isDark, bgCard, divColor, textPrimary, accent),
+              drawer: _buildDrawer(isDark, bgCard, divColor, textPrimary, accent),
 
-          appBar: AppBar(
-            toolbarHeight: 70,
-            backgroundColor: isDark ? Colors.black : Colors.white,
-            elevation: 0,
-            scrolledUnderElevation: 0.5,
-            leading: IconButton(
-              icon: Icon(CupertinoIcons.line_horizontal_3,
-                  color: textPrimary, size: 22),
-              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-            ),
-            titleSpacing: 0,
-            // Offset vertical para alinear visualmente el logo con los íconos
-            // del AppBar, compensando el padding interno del widget Image.
-            title: Transform.translate(
-              offset: const Offset(0, -6),
-              child: Image.asset(
-                isDark
-                    ? 'assets/images/appbar_modo_oscuro.png'
-                    : 'assets/images/appbar_modo_claro.png',
-                key: ValueKey(isDark), // Fuerza rebuild al cambiar tema.
-                height: 33,
-                fit: BoxFit.contain,
-              ),
-            ),
-            centerTitle: false,
-            actions: [
-              // Avatar placeholder: sin datos de perfil reales todavía,
-              // se muestra siempre el ícono genérico de persona.
-              Padding(
-                padding: const EdgeInsets.only(right: 14),
-                child: GestureDetector(
-                  onTap: () => _proximamente('Mi Perfil'),
-                  child: Container(
-                    width: 34,
-                    height: 34,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: accent.withValues(alpha: 0.35),
-                        width: 1.5,
-                      ),
-                    ),
-                    child: ClipOval(
+              appBar: AppBar(
+                toolbarHeight: 70,
+                backgroundColor: isDark ? Colors.black : Colors.white,
+                elevation: 0,
+                scrolledUnderElevation: 0.5,
+                leading: IconButton(
+                  icon: Icon(CupertinoIcons.line_horizontal_3,
+                      color: textPrimary, size: 22),
+                  onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                ),
+                titleSpacing: 0,
+                // Offset vertical para alinear visualmente el logo con los íconos
+                // del AppBar, compensando el padding interno del widget Image.
+                title: Transform.translate(
+                  offset: const Offset(0, -6),
+                  child: Image.asset(
+                    isDark
+                        ? 'assets/images/appbar_modo_oscuro.png'
+                        : 'assets/images/appbar_modo_claro.png',
+                    key: ValueKey(isDark), // Fuerza rebuild al cambiar tema.
+                    height: 33,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+                centerTitle: false,
+                actions: [
+                  // Nota: la campanita de notificaciones YA NO vive aquí —
+                  // se quitó para no duplicar la que ya existe en el
+                  // encabezado de ComunidadAspirantes (page_home.dart).
+                  // El conteo (_notificacionesNoLeidas) y la suscripción
+                  // Realtime se conservan sin cambios: siguen alimentando
+                  // el banner deslizante y quedan disponibles por si más
+                  // adelante se quiere mostrar el badge en otro lugar
+                  // (p. ej. sobre esa misma campanita de page_home.dart).
+
+                  // Avatar: muestra la foto real del usuario si ya cargó
+                  // (_fotoUrl != null); si no, cae al ícono genérico de
+                  // persona — mismo comportamiento mientras _fotoUrl está
+                  // en null (cargando o sin foto) que si Image.network
+                  // falla al mostrarla (errorBuilder).
+                  Padding(
+                    padding: const EdgeInsets.only(right: 14),
+                    child: GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const EditarPerfilAspirante()),
+                      ).then((_) => _cargarFotoPerfil()), // refresca al volver
                       child: Container(
-                        color: accent.withValues(alpha: 0.15),
-                        alignment: Alignment.center,
-                        child: Icon(CupertinoIcons.person_fill,
-                            color: accent, size: 16),
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: accent.withValues(alpha: 0.35),
+                            width: 1.5,
+                          ),
+                        ),
+                        child: ClipOval(
+                          child: (_fotoUrl != null && _fotoUrl!.isNotEmpty)
+                              ? Image.network(
+                            _fotoUrl!,
+                            fit: BoxFit.cover,
+                            width: 34,
+                            height: 34,
+                            errorBuilder: (_, __, ___) => _avatarPlaceholder(accent),
+                            loadingBuilder: (context, child, progress) {
+                              if (progress == null) return child;
+                              return _avatarPlaceholder(accent);
+                            },
+                          )
+                              : _avatarPlaceholder(accent),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+
+                // ── TabBar estilo segmented control ───────────────────
+                bottom: PreferredSize(
+                  preferredSize: const Size.fromHeight(54),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? const Color(0xFF2C2C2E)
+                            : const Color(0xFFE5E5EA),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.all(3),
+                      child: TabBar(
+                        controller:    _tabController,
+                        dividerColor:  Colors.transparent,
+                        indicatorSize: TabBarIndicatorSize.tab,
+                        indicator: BoxDecoration(
+                          color: isDark ? const Color(0xFF3A3A3C) : Colors.white,
+                          borderRadius: BorderRadius.circular(9),
+                          boxShadow: isDark
+                              ? null
+                              : [
+                            BoxShadow(
+                              color:      Colors.black.withValues(alpha: 0.08),
+                              blurRadius: 4,
+                              offset:     const Offset(0, 1),
+                            ),
+                          ],
+                        ),
+                        labelColor:           const Color(0xFF007AFF),
+                        unselectedLabelColor: isDark ? Colors.white38 : Colors.black38,
+                        overlayColor:         const WidgetStatePropertyAll(Colors.transparent),
+                        splashFactory:        NoSplash.splashFactory,
+                        tabs: List.generate(_tabs.length, (i) {
+                          final t = _tabs[i];
+                          return Tab(
+                            icon: Icon(
+                              _currentTabIndex == i ? t.activeIcon : t.icon,
+                              size: 22,
+                            ),
+                          );
+                        }),
                       ),
                     ),
                   ),
                 ),
               ),
-            ],
 
-            // ── TabBar estilo segmented control ───────────────────
-            bottom: PreferredSize(
-              preferredSize: const Size.fromHeight(54),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: isDark
-                        ? const Color(0xFF2C2C2E)
-                        : const Color(0xFFE5E5EA),
-                    borderRadius: BorderRadius.circular(12),
+              // TabBarView sincronizado con el mismo controller del TabBar.
+              // Los tres cuerpos son placeholders visuales, sin datos reales
+              // hasta que se defina la lógica/backend de esta app.
+              body: TabBarView(
+                controller: _tabController,
+                children: [
+                  // ── Tab 1: Comunidad Nuevo Ingreso ──────────────────
+                  ComunidadAspirantes(
+                    isDark: isDark,
+                    notificacionesNoLeidas: _notificacionesNoLeidas,
+                    onAbrirNotificaciones: () => _abrirNotificaciones(isDark),
                   ),
-                  padding: const EdgeInsets.all(3),
-                  child: TabBar(
-                    controller:    _tabController,
-                    dividerColor:  Colors.transparent,
-                    indicatorSize: TabBarIndicatorSize.tab,
-                    indicator: BoxDecoration(
-                      color: isDark ? const Color(0xFF3A3A3C) : Colors.white,
-                      borderRadius: BorderRadius.circular(9),
-                      boxShadow: isDark
-                          ? null
-                          : [
-                        BoxShadow(
-                          color:      Colors.black.withValues(alpha: 0.08),
-                          blurRadius: 4,
-                          offset:     const Offset(0, 1),
-                        ),
-                      ],
-                    ),
-                    labelColor:           const Color(0xFF007AFF),
-                    unselectedLabelColor: isDark ? Colors.white38 : Colors.black38,
-                    overlayColor:         const WidgetStatePropertyAll(Colors.transparent),
-                    splashFactory:        NoSplash.splashFactory,
-                    tabs: List.generate(_tabs.length, (i) {
-                      final t = _tabs[i];
-                      return Tab(
-                        icon: Icon(
-                          _currentTabIndex == i ? t.activeIcon : t.icon,
-                          size: 22,
-                        ),
-                      );
-                    }),
-                  ),
-                ),
+
+                  // ── Tab 2: Mi Perfil Aspirante ───────────────────────
+                  MiPerfilAspirante(isDark: isDark),
+
+                  const UbicaTecScreen(),
+                ],
               ),
             ),
-          ),
 
-          // TabBarView sincronizado con el mismo controller del TabBar.
-          // Los tres cuerpos son placeholders visuales, sin datos reales
-          // hasta que se defina la lógica/backend de esta app.
-          body: TabBarView(
-            controller: _tabController,
-            children: [
-              // ── Tab 1: Comunidad Nuevo Ingreso ──────────────────
-              ComunidadAspirantes(isDark: isDark),
+            // ── Banner de notificación estilo iOS ───────────────────
+            // Vive encima del Scaffold en el mismo Stack, así que no
+            // depende del árbol de navegación interno y se ve sin
+            // importar en qué tab esté el usuario.
+            _bannerNotificacion(isDark, textPrimary, bgCard),
+          ],
+        );
+      },
+    );
+  }
 
-              // ── Tab 2: Mi Perfil Aspirante ───────────────────────
-              Column(
+  /// Ícono genérico de persona, usado como fallback del avatar
+  /// mientras no hay foto, mientras carga, o si Image.network falla.
+  Widget _avatarPlaceholder(Color accent) {
+    return Container(
+      color: accent.withValues(alpha: 0.15),
+      alignment: Alignment.center,
+      child: Icon(CupertinoIcons.person_fill, color: accent, size: 16),
+    );
+  }
+
+
+  // ─────────────────────────────────────────────────────────────
+  // BANNER DE NOTIFICACIÓN (estilo iOS)
+  // ─────────────────────────────────────────────────────────────
+
+  /// Card flotante que se desliza desde arriba cuando llega una
+  /// notificación nueva. AnimatedPositioned controla la entrada/salida
+  /// según _bannerData sea null o no — cero paquetes externos.
+  Widget _bannerNotificacion(bool isDark, Color textPrimary, Color bgCard) {
+    final visible = _bannerData != null;
+    final data = _bannerData;
+
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+      top: visible ? MediaQuery.of(context).padding.top + 6 : -140,
+      left: 12,
+      right: 12,
+      child: SafeArea(
+        bottom: false,
+        child: GestureDetector(
+          onTap: () {
+            _ocultarBanner();
+            _abrirNotificaciones(isDark);
+          },
+          // Deslizar hacia arriba para descartar manualmente.
+          onVerticalDragEnd: (details) {
+            if ((details.primaryVelocity ?? 0) < 0) _ocultarBanner();
+          },
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF2C2C2E) : Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? 0.5 : 0.18),
+                    blurRadius: 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: data == null
+                  ? const SizedBox(height: 44)
+                  : Row(
                 children: [
-                  MiPerfilAspirante(isDark: isDark),
-                  const Expanded(
-                    child: _PlaceholderContenido(
-                      subtitulo: 'Aquí podrás consultar y editar tu\n'
-                          'información como aspirante',
+                  Stack(
+                    children: [
+                      CircleAvatar(
+                        radius: 20,
+                        backgroundColor:
+                        const Color(0xFF007AFF).withValues(alpha: 0.15),
+                        backgroundImage: (data['fotoUrl'] as String).isNotEmpty
+                            ? CachedNetworkImageProvider(data['fotoUrl'] as String)
+                            : null,
+                        child: (data['fotoUrl'] as String).isEmpty
+                            ? const Icon(CupertinoIcons.person_fill,
+                            color: Color(0xFF007AFF), size: 18)
+                            : null,
+                      ),
+                      Positioned(
+                        right: -2,
+                        bottom: -2,
+                        child: Container(
+                          padding: const EdgeInsets.all(3),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF2C2C2E) : Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            _iconoNotif(data['tipo'] as String?),
+                            size: 11,
+                            color: const Color(0xFF007AFF),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: RichText(
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      text: TextSpan(
+                        style: TextStyle(color: textPrimary, fontSize: 13.5),
+                        children: [
+                          TextSpan(
+                            text: '${data['nombre']} ',
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          TextSpan(text: _textoNotif(data['tipo'] as String?)),
+                        ],
+                      ),
                     ),
                   ),
                 ],
               ),
-
-              const UbicaTecScreen(),
-            ],
+            ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -333,7 +728,12 @@ class _FeedAspirantesState extends State<FeedAspirantes>
                 icon:     CupertinoIcons.location_solid,
                 iconBg:   const Color(0xFF007AFF),
                 isDark:   isDark,
-                onTap: () => _proximamente('Conoce el plantel'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const ConocePlantelScreen()),
+                  );
+                },
               ),
               const SizedBox(height: 10),
 
@@ -344,7 +744,12 @@ class _FeedAspirantesState extends State<FeedAspirantes>
                 icon:     CupertinoIcons.book_solid,
                 iconBg:   const Color(0xFF007AFF),
                 isDark:   isDark,
-                onTap: () => _proximamente('Un poco de historia'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const HistoriaPlantelScreen()),
+                  );
+                },
               ),
               const SizedBox(height: 10),
 
@@ -355,7 +760,12 @@ class _FeedAspirantesState extends State<FeedAspirantes>
                 icon:     CupertinoIcons.add_circled_solid,
                 iconBg:   const Color(0xFF34C759),
                 isDark:   isDark,
-                onTap: () => _proximamente('Oferta educativa'),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const OfertaEducativaScreen()),
+                  );
+                },
               ),
               const SizedBox(height: 10),
 
@@ -368,7 +778,14 @@ class _FeedAspirantesState extends State<FeedAspirantes>
                 icon:      Icons.share_rounded,
                 iconBg:    const Color(0xFF34C759),
                 isDark:    isDark,
-                onTap: () => _proximamente('Compartir'),
+                onTap: () {
+                  Navigator.pop(context);
+                  SharePlus.instance.share(ShareParams(text:
+                  'Descarga "Aspirantes ITVH". La antesala de la app Comunidad ITVH.\n\n'
+                      'Android: https://play.google.com/store/apps/details?id=TU_PACKAGE_ID\n\n'
+                      'iOS: PRÓXIMAMENTE'),
+                  );
+                },
               ),
               const SizedBox(height: 24),
 
@@ -464,45 +881,44 @@ class _FeedAspirantesState extends State<FeedAspirantes>
                 bgCard:      bgCard,
                 divColor:    divColor,
                 textPrimary: textPrimary,
-                onTap: () => _proximamente('Ajustes'),
-              ),
-              const SizedBox(height: 10),
-
-              // Cerrar sesión: única opción del Drawer con lógica real,
-              // ya que Supabase Auth signOut ya existe en esta app.
-              _drawerTile(
-                icon:        CupertinoIcons.square_arrow_right,
-                iconBg:      const Color(0xFFFF3B30),
-                label:       'Cerrar sesión',
-                subtitle:    'Salir de tu cuenta de aspirante',
-                bgCard:      bgCard,
-                divColor:    divColor,
-                textPrimary: textPrimary,
-                onTap: _cerrarSesion,
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const AjustesScreen()),
+                  );
+                },
               ),
               const SizedBox(height: 32),
 
               // Pie del Drawer.
-              Center(
-                child: Column(
-                  children: [
-                    Text(
-                      'Aspirantes ITVH',
-                      style: TextStyle(
-                        color:      textPrimary.withValues(alpha: 0.55),
-                        fontSize:   13,
-                        fontWeight: FontWeight.w600,
+              GestureDetector(
+                onTap: () => launchUrl(
+                  Uri.parse(
+                    'https://programix-navejl.github.io/programix-navejl/',
+                  ),
+                  mode: LaunchMode.externalApplication,
+                ),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Text(
+                        'Aspirantes ITVH',
+                        style: TextStyle(
+                          color:      textPrimary.withValues(alpha: 0.55),
+                          fontSize:   13,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      'Programix NaveJL © 2026',
-                      style: TextStyle(
-                        color:    textPrimary.withValues(alpha: 0.30),
-                        fontSize: 11,
+                      const SizedBox(height: 3),
+                      Text(
+                        'Programix NaveJL © 2026',
+                        style: TextStyle(
+                          color:    textPrimary.withValues(alpha: 0.30),
+                          fontSize: 11,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -780,7 +1196,7 @@ class _TabItem {
 // la lógica/backend real de "Aspirantes ITVH". Muestra un ícono grande,
 // un título y un subtítulo descriptivo de lo que irá en esa sección.
 //
-// Nota: sigue leyendo Theme.of(context).brightness directo (no
+// Nota: sigue leyendo Theme.of(context).brightness direct (no
 // isDarkNotifier) porque MaterialApp ya reconstruye su ThemeData
 // completo desde main.dart cuando el tema global cambia, así que
 // este widget se entera igual sin necesidad de escuchar el notifier

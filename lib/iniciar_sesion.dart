@@ -132,12 +132,11 @@ class _LoginScreenState extends State<LoginScreen>
         final result = await Supabase.instance.client
             .from('perfiles_aspirantes')
             .select('email')
-            .eq('nombre_usuario', identifier)
+            .or('nombre_usuario.eq.$identifier,numero_ficha.eq.$identifier')
             .maybeSingle();
 
         if (result == null) {
           if (mounted) setState(() => _loading = false);
-          // Mensaje genérico para no revelar si el usuario existe.
           _showError('Usuario o contraseña incorrectos.');
           return;
         }
@@ -436,11 +435,11 @@ class _LoginScreenState extends State<LoginScreen>
                                   _GlassField(
                                     controller:      _identifierController,
                                     focusNode:       _identifierFocus,
-                                    hint:            'Correo o usuario',
+                                    hint:            'Correo',
                                     icon:            Icons.person_outline_rounded,
                                     textInputAction: TextInputAction.next,
                                     onSubmitted:     (_) => _passwordFocus.requestFocus(),
-                                    keyboardType:    TextInputType.emailAddress,
+                                    keyboardType:    TextInputType.text, // antes era emailAddress
                                   ),
                                   const SizedBox(height: 14),
 

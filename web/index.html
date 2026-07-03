@@ -20,6 +20,17 @@
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="Una semi red social adaptada de Comunidad ITVH">
 
+  <!--
+    NUEVO: se agregan maximum-scale=1.0 y user-scalable=no.
+    Sin esto, en celulares el navegador interpreta gestos de
+    arrastre/pellizco como zoom o desplazamiento de TODA la página
+    (no solo del mapa), compitiendo con los gestos que Google Maps
+    intenta capturar. Esto es exclusivo de web: en Android nativo no
+    existe "la página del navegador", así que este problema no se
+    manifiesta ahí.
+  -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
@@ -31,16 +42,49 @@
 
   <title>aspirantes_itvh</title>
   <link rel="manifest" href="manifest.json">
+
+  <!--
+    NUEVO: touch-action: none + overscroll-behavior: none en
+    html/body. Esto bloquea el "pull to refresh", el scroll por
+    arrastre y el pinch-zoom nativo del NAVEGADOR sobre toda la
+    página, dejando que Flutter (y dentro de él, Google Maps) sea
+    el único que interprete los gestos táctiles. Sin esto, al
+    arrastrar el mapa, el navegador "gana" el gesto y mueve la
+    página completa en vez de solo el mapa.
+  -->
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+  </style>
 </head>
 <body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
+<script src='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs' type='module'></script>
+<script type='module'>
+  var { pdfjsLib } = globalThis;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.mjs';
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
-  <script src="flutter_bootstrap.js" async></script>
+  var pdfRenderOptions = {
+    cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/cmaps/',
+    cMapPacked: true,
+  }
+</script>
+
+<!-- Google Maps ANTES de que Flutter arranque -->
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAYOO8xpXcQAlDiWu89RIZpwD0J897ZEKk"></script>
+
+<!--
+  You can customize the "flutter_bootstrap.js" script.
+  This is useful to provide a custom configuration to the Flutter loader
+  or to give the user feedback during the initialization process.
+
+  For more details:
+  * https://docs.flutter.dev/platform-integration/web/initialization
+-->
+<script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

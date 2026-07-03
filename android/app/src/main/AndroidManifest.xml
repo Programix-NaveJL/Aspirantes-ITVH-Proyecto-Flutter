@@ -30,7 +30,7 @@
     <application
         android:label="aspirantes_itvh"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/launcher_icon">
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="AIzaSyBYdcrxKoKqmcgV5eP-aNv3swifM4ScLSI"/>

@@ -20,18 +20,27 @@
 //     "R2_ACCESS_KEY": "...",
 //     "R2_SECRET_KEY": "..."
 //   }
+//
+// ── NOTA IMPORTANTE ─────────────────────────────────────────────
+// String.fromEnvironment(name) espera el NOMBRE de la variable de
+// entorno definida vía --dart-define, NO el valor en sí. Pasarle
+// el valor real como si fuera el nombre (como estaba antes) hace
+// que Dart busque una variable inexistente y regrese "" (string
+// vacío) silenciosamente — sin error en tiempo de compilación, solo
+// falla después, en runtime, al intentar usar credenciales vacías.
 // ═════════════════════════════════════════════════════════════════
 
 class R2Config {
   R2Config._();
 
   // ── Credenciales (inyectadas en build time) ───────────────────
-  static const String accountId = String.fromEnvironment('46071d7abe376a329d63170f6417ee6e');
-  static const String accessKey = String.fromEnvironment('709e24ca3eaec9619a407391b9299986');
-  static const String secretKey = String.fromEnvironment('d6337399bfc184893ccf84bb2f9affbe94b03289e02e388b0177153198af9aee');
+  // El nombre aquí ('R2_ACCOUNT_ID', etc.) debe coincidir EXACTO
+  // con la clave usada en r2_secrets.json y con --dart-define.
+  static const String accountId = String.fromEnvironment('R2_ACCOUNT_ID');
+  static const String accessKey = String.fromEnvironment('R2_ACCESS_KEY');
+  static const String secretKey = String.fromEnvironment('R2_SECRET_KEY');
 
   static String get endPoint => '$accountId.r2.cloudflarestorage.com';
-  //https://46071d7abe376a329d63170f6417ee6e.r2.cloudflarestorage.com
 
   // ── Buckets ─────────────────────────────────────────────────
   static const String bucketPerfil        = 'itvh-aspirantes-perfil';
