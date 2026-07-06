@@ -7,13 +7,34 @@
 // ni marketplace todavía). Si se agregan esas features después, se
 // puede portar el resto de storage_service.dart de Comunidad ITVH.
 //
+// FIX DE SEGURIDAD (jul 2026): esta versión YA NO usa el paquete
+// `minio` con credenciales de R2 embebidas en el cliente. Ese
+// enfoque exponía accessKey/secretKey con permisos de
+// lectura/escritura/borrado dentro del propio APK (extraíbles con
+// solo descompilarlo). Ahora TODA subida pasa por la Edge Function
+// `generar-url-subida`, que:
+//   1. Verifica que quien pide la URL es un usuario autenticado real.
+//   2. Verifica que el bucket esté en la lista blanca permitida.
+//   3. Verifica que el path empiece con el userId del usuario (nadie
+//      puede sobreescribir archivos de otra persona).
+//   4. Devuelve una URL PUT firmada de corta duración.
+// El cliente Flutter nunca ve accessKey/secretKey — solo hace un
+// PUT HTTP directo a la URL firmada que le entrega la función.
+//
+// El borrado (eliminarDeR2) sigue el mismo patrón: llama a una
+// segunda Edge Function, `eliminar-objeto-r2`, que valida el mismo
+// tipo de reglas antes de borrar. Ver nota al final de este archivo
+// con el código sugerido para esa función si aún no existe.
+//
 // Flujo general por archivo:
 //   1. Comprimir imagen (JPEG q70) o video (calidad media, ffmpeg)
-//   2. Subir al bucket R2 correspondiente vía protocolo S3
-//   3. Eliminar el archivo temporal generado por la compresión
-//   4. Devolver la URL pública CDN del objeto subido
+//   2. Pedir URL firmada a la Edge Function `generar-url-subida`
+//   3. Subir el archivo comprimido con un PUT directo a esa URL
+//   4. Eliminar el archivo temporal generado por la compresión
+//   5. Devolver la URL pública CDN del objeto subido
 //
-// Métodos públicos:
+// Métodos públicos (misma firma que la versión anterior, ningún
+// caller necesita cambios):
 //   • subirFotoPerfil(file, userId)
 //       → sube avatar a itvh-aspirantes-perfil/<userId>/avatar.jpg
 //
@@ -26,9 +47,11 @@
 // ═════════════════════════════════════════════════════════════════
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:minio/minio.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
@@ -46,14 +69,6 @@ class StorageService {
 
   static final StorageService instance = StorageService._();
 
-  final Minio _r2 = Minio(
-    endPoint:  R2Config.endPoint,
-    accessKey: R2Config.accessKey,
-    secretKey: R2Config.secretKey,
-    useSSL:    true,
-    region:    'auto',
-  );
-
 
   // ─────────────────────────────────────────────────────────────
   // FOTO DE PERFIL
@@ -70,8 +85,14 @@ class StorageService {
   }) async {
     final compressed = await _comprimirImagen(file);
     try {
-      final path = '$userId/avatar.jpg';
-      await _subirAR2(compressed, R2Config.bucketPerfil, path, 'image/jpeg');
+      final version = DateTime.now().millisecondsSinceEpoch;
+      final path = '$userId/avatar_$version.jpg';   // antes: '$userId/avatar.jpg'
+      await _subirViaUrlFirmada(
+        file:        compressed,
+        bucket:      R2Config.bucketPerfil,
+        path:        path,
+        contentType: 'image/jpeg',
+      );
       return '${R2Config.dominioPerfil}/$path';
     } finally {
       await _limpiar(compressed);
@@ -88,8 +109,9 @@ class StorageService {
   // Soporta carrusel — cada archivo recibe un índice de orden
   // para mantener la secuencia correcta en el feed.
   //
-  // [onProgress] solo se invoca cuando el archivo es un video
-  // (la compresión de imagen es prácticamente instantánea).
+  // [onProgress] solo se invoca durante la COMPRESIÓN del video
+  // (igual que antes); la subida en sí vía PUT firmado no reporta
+  // progreso incremental.
   // ─────────────────────────────────────────────────────────────
   Future<String> subirMediaPublicacion({
     required File   file,
@@ -102,7 +124,12 @@ class StorageService {
       final compressed = await _comprimirVideo(file, onProgress: onProgress);
       try {
         final path = '$userId/$postId/$orden.mp4';
-        await _subirAR2(compressed, R2Config.bucketPublicaciones, path, 'video/mp4');
+        await _subirViaUrlFirmada(
+          file:        compressed,
+          bucket:      R2Config.bucketPublicaciones,
+          path:        path,
+          contentType: 'video/mp4',
+        );
         return '${R2Config.dominioPublicaciones}/$path';
       } finally {
         await _limpiar(compressed);
@@ -111,7 +138,12 @@ class StorageService {
       final compressed = await _comprimirImagen(file);
       try {
         final path = '$userId/$postId/$orden.jpg';
-        await _subirAR2(compressed, R2Config.bucketPublicaciones, path, 'image/jpeg');
+        await _subirViaUrlFirmada(
+          file:        compressed,
+          bucket:      R2Config.bucketPublicaciones,
+          path:        path,
+          contentType: 'image/jpeg',
+        );
         return '${R2Config.dominioPublicaciones}/$path';
       } finally {
         await _limpiar(compressed);
@@ -123,15 +155,32 @@ class StorageService {
   // ─────────────────────────────────────────────────────────────
   // ELIMINAR DE R2
   //
-  // Elimina un objeto de cualquier bucket R2.
-  // El caller es responsable de proporcionar el bucket y path
-  // correctos — no hay validación previa de existencia.
+  // Elimina un objeto de cualquier bucket R2, vía la Edge Function
+  // `eliminar-objeto-r2` (requiere sesión activa; la función valida
+  // bucket permitido y que el path pertenezca al usuario, igual que
+  // `generar-url-subida`).
   // ─────────────────────────────────────────────────────────────
   Future<void> eliminarDeR2({
     required String bucket,
     required String path,
   }) async {
-    await _r2.removeObject(bucket, path);
+    final session = Supabase.instance.client.auth.currentSession;
+    if (session == null) {
+      throw Exception('Tu sesión expiró, vuelve a iniciar sesión');
+    }
+
+    final response = await http.post(
+      Uri.parse('${R2Config.edgeFunctionsUrl}/eliminar-objeto-r2'),
+      headers: {
+        'Authorization': 'Bearer ${session.accessToken}',
+        'Content-Type':  'application/json',
+      },
+      body: jsonEncode({'bucket': bucket, 'path': path}),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Error al eliminar archivo (${response.statusCode}): ${response.body}');
+    }
   }
 
 
@@ -213,23 +262,61 @@ class StorageService {
     return outFile;
   }
 
-  /// Sube un [File] a R2 en el [bucket] y [path] indicados.
-  Future<void> _subirAR2(
-      File   file,
-      String bucket,
-      String path,
-      String contentType,
-      ) async {
-    final bytes  = await file.readAsBytes();
-    final stream = Stream.value(bytes);
+  /// Sube un [File] a R2 en dos pasos:
+  ///   1. Pide una URL PUT firmada a la Edge Function
+  ///      `generar-url-subida` (requiere sesión activa).
+  ///   2. Hace el PUT directo del archivo a esa URL firmada.
+  ///
+  /// El cliente nunca maneja credenciales de R2 — solo el token de
+  /// sesión de Supabase, que la Edge Function usa para validar al
+  /// usuario antes de firmar la URL.
+  Future<void> _subirViaUrlFirmada({
+    required File   file,
+    required String bucket,
+    required String path,
+    required String contentType,
+  }) async {
+    final session = Supabase.instance.client.auth.currentSession;
+    if (session == null) {
+      throw Exception('Tu sesión expiró, vuelve a iniciar sesión');
+    }
 
-    await _r2.putObject(
-      bucket,
-      path,
-      stream,
-      size:     bytes.length,
-      metadata: {'Content-Type': contentType},
+    // 1. Pedir la URL firmada.
+    final urlResponse = await http.post(
+      Uri.parse('${R2Config.edgeFunctionsUrl}/generar-url-subida'),
+      headers: {
+        'Authorization': 'Bearer ${session.accessToken}',
+        'Content-Type':  'application/json',
+      },
+      body: jsonEncode({
+        'bucket':      bucket,
+        'path':        path,
+        'contentType': contentType,
+      }),
     );
+
+    if (urlResponse.statusCode != 200) {
+      throw Exception(
+        'No se pudo generar la URL de subida (${urlResponse.statusCode}): ${urlResponse.body}',
+      );
+    }
+
+    final urlFirmada = (jsonDecode(urlResponse.body) as Map<String, dynamic>)['url'] as String?;
+    if (urlFirmada == null || urlFirmada.isEmpty) {
+      throw Exception('La Edge Function no devolvió una URL de subida válida');
+    }
+
+    // 2. Subir el archivo directo a R2 con esa URL firmada.
+    final bytes = await file.readAsBytes();
+    final putResponse = await http.put(
+      Uri.parse(urlFirmada),
+      headers: {'Content-Type': contentType},
+      body: bytes,
+    );
+
+    if (putResponse.statusCode != 200 && putResponse.statusCode != 204) {
+      throw Exception('Error al subir a R2 (${putResponse.statusCode}): ${putResponse.body}');
+    }
   }
 
   bool _esVideo(String path) {
@@ -246,3 +333,88 @@ class StorageService {
     } catch (_) {}
   }
 }
+
+// ═════════════════════════════════════════════════════════════════
+// PENDIENTES para que esta versión funcione end-to-end:
+//
+// 1. r2_config.dart necesita un campo nuevo con la URL base de tus
+//    Edge Functions (ya NO necesita endPoint/accessKey/secretKey,
+//    esos ahora solo existen del lado del servidor):
+//
+//      class R2Config {
+//        static const edgeFunctionsUrl =
+//            'https://<tu-project-ref>.supabase.co/functions/v1';
+//
+//        static const bucketPerfil        = 'itvh-aspirantes-perfil';
+//        static const dominioPerfil       = 'https://pub-xxxx.r2.dev';
+//        static const bucketPublicaciones = 'itvh-aspirantes-publicaciones';
+//        static const dominioPublicaciones= 'https://pub-yyyy.r2.dev';
+//      }
+//
+// 2. pubspec.yaml: quitar la dependencia `minio`, ya no se usa.
+//    Confirmar que `http` esté como dependencia (probablemente ya
+//    la tienes por otras partes de la app).
+//
+// 3. Falta crear la Edge Function `eliminar-objeto-r2` (hermana de
+//    `generar-url-subida`, mismo patrón de validación). Ejemplo:
+//
+//      // supabase/functions/eliminar-objeto-r2/index.ts
+//      import { serve } from 'https://deno.land/std@0.224.0/http/server.ts'
+//      import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+//      import { AwsClient } from 'https://esm.sh/aws4fetch@1.0.17'
+//
+//      const R2_ACCOUNT_ID        = Deno.env.get('R2_ACCOUNT_ID')!
+//      const R2_ACCESS_KEY_ID     = Deno.env.get('R2_ACCESS_KEY_ID')!
+//      const R2_SECRET_ACCESS_KEY = Deno.env.get('R2_SECRET_ACCESS_KEY')!
+//
+//      const BUCKETS_PERMITIDOS = new Set([
+//        'itvh-aspirantes-perfil',
+//        'itvh-aspirantes-publicaciones',
+//      ])
+//
+//      serve(async (req) => {
+//        if (req.method !== 'POST') {
+//          return new Response('Método no permitido', { status: 405 })
+//        }
+//
+//        const authHeader = req.headers.get('Authorization')
+//        if (!authHeader) return new Response('No autorizado', { status: 401 })
+//
+//        const supabase = createClient(
+//          Deno.env.get('SUPABASE_URL')!,
+//          Deno.env.get('SUPABASE_ANON_KEY')!,
+//          { global: { headers: { Authorization: authHeader } } },
+//        )
+//
+//        const { data: { user }, error } = await supabase.auth.getUser()
+//        if (error || !user) return new Response('No autorizado', { status: 401 })
+//
+//        const { bucket, path } = await req.json()
+//
+//        if (!BUCKETS_PERMITIDOS.has(bucket)) {
+//          return new Response('Bucket no permitido', { status: 400 })
+//        }
+//        if (!path.startsWith(`${user.id}/`)) {
+//          return new Response('Ruta no autorizada para este usuario', { status: 403 })
+//        }
+//
+//        const client = new AwsClient({
+//          accessKeyId:     R2_ACCESS_KEY_ID,
+//          secretAccessKey: R2_SECRET_ACCESS_KEY,
+//          service: 's3',
+//          region:  'auto',
+//        })
+//
+//        const endpoint = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${bucket}/${path}`
+//
+//        const respuesta = await client.fetch(endpoint, { method: 'DELETE' })
+//
+//        if (!respuesta.ok) {
+//          return new Response('Error al eliminar en R2', { status: 502 })
+//        }
+//
+//        return new Response('OK', { status: 200 })
+//      })
+//
+//    Desplegar con: supabase functions deploy eliminar-objeto-r2
+// ═════════════════════════════════════════════════════════════════

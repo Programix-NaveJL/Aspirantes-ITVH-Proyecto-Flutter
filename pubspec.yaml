@@ -20,12 +20,25 @@
 # Nota: isar / isar_flutter_libs / isar_generator están fijados en
 #   ^3.1.0 porque la versión 4.x cambió la API de forma incompatible
 #   y aún no tiene soporte oficial para todas las plataformas destino.
+#
+# Nota (jul 2026): se quitó `minio`. La subida/borrado de archivos en
+#   R2 ahora pasa por Edge Functions con URLs firmadas (ver
+#   storage_service.dart) — el cliente ya no maneja credenciales de
+#   R2 directamente, así que el paquete dejó de ser necesario. La
+#   subida usa el paquete `http` que ya estaba en el proyecto.
+#
+# Nota (jul 2026): se agregó `gal` para guardar imágenes de
+#   publicaciones en la galería del dispositivo desde el visor de
+#   imagen a pantalla completa (ver tarjeta_publicacion.dart). Se
+#   eligió sobre image_gallery_saver porque este último ya no tiene
+#   mantenimiento activo y gal maneja permisos de forma nativa sin
+#   depender de permission_handler para este caso.
 # ═════════════════════════════════════════════════════════════════
 
 name: aspirantes_itvh_app
 description: "Comunidad de aspirantes de nuevo ingreso del Tec de Villahermosa"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.0+6
 
 environment:
   sdk: ^3.0.0
@@ -59,15 +72,13 @@ dependencies:
   isar_flutter_libs: ^3.1.0     # Binarios nativos de Isar para Flutter
   uuid: ^4.0.0                  # Generación de identificadores únicos UUID
 
-  # ── Almacenamiento de objetos (MinIO / S3-compatible) ─────────
-  minio: ^3.5.8                 # Cliente MinIO para subida/descarga de archivos
-
   # ── Multimedia — cámara y galería ────────────────────────────
   camera: ^0.12.0+1             # Acceso directo a la cámara del dispositivo
   image_picker: ^1.1.2          # Selector de imágenes y videos de la galería
   photo_manager: ^3.3.0         # Gestión avanzada de la galería (álbumes, filtros)
   flutter_image_compress: ^2.3.0 # Compresión de imágenes antes de subir
   ffmpeg_kit_flutter_new: ^4.3.2 # Compresión de videos antes de subir
+  gal: ^2.3.0                   # Guardar imágenes en la galería del dispositivo
 
   # ── Multimedia — reproducción ────────────────────────────────
   video_player: ^2.9.2          # Reproductor de video nativo
@@ -80,7 +91,7 @@ dependencies:
   pdfx: ^2.6.0                  # Renderizado de PDF en Flutter
 
   # ── Red y navegación ─────────────────────────────────────────
-  http: ^1.2.1                  # Cliente HTTP para descarga de archivos
+  http: ^1.2.1                  # Cliente HTTP (descargas + subida a R2 vía URL firmada)
   url_launcher: ^6.2.5          # Abrir URLs en el navegador o apps externas
   app_links: ^7.1.2             # Deep links y universal links (Android + iOS)
   webview_flutter: ^4.10.0      # WebView embebido para contenido web

@@ -11,13 +11,24 @@
 // Los motivos de reporte mandan el VALOR exacto que acepta el CHECK
 // constraint de la tabla reportes (spam, acoso_bullying,
 // contenido_inapropiado, desinformacion, violencia, otro), no el
-// texto legible que ve el usuario.)
+// texto legible que ve el usuario.
+//
+// nuevo (jul 2026): al tocar una IMAGEN del carrusel (los videos
+// siguen abriendo ReproductorVideo como antes) se abre
+// _VisorImagenPublicacion — visor a pantalla completa con zoom que
+// además replica el encabezado (avatar/nombre, tappable → cierra el
+// visor y navega al perfil), el texto de la publicación, y la fila
+// de reaccionar/comentar, sincronizada con la tarjeta de origen.
+// Incluye botón para guardar la imagen en la galería del
+// dispositivo (paquete `gal`); esa opción no aplica a video.
 // ═════════════════════════════════════════════════════════════════
 
 import 'package:aspirantes_itvh_app/comunidad_aspirantes/reproductor_video.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:gal/gal.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
@@ -119,6 +130,55 @@ class _TarjetaPublicacionState extends State<TarjetaPublicacion> {
     final autorId = widget.publicacion['autor_id'] as String?;
     if (autorId == null) return;
     abrirPerfil(context, perfilId: autorId, isDark: widget.isDark);
+  }
+
+  /// Abre el visor de imagen a pantalla completa en el índice
+  /// tocado. Recibe copias del estado actual de reacción y un
+  /// callback para que, al regresar, la tarjeta refleje cualquier
+  /// cambio hecho desde dentro del visor (reaccionar).
+  void _abrirVisorImagen(int indiceInicial) {
+    final perfil  = widget.publicacion['perfiles_aspirantes'] as Map<String, dynamic>?;
+    final fotoUrl = perfil != null ? resolverUrlPerfil(perfil) : '';
+    final nombre  = perfil?['nombre'] as String? ?? 'Aspirante';
+    final contenido = widget.publicacion['contenido'] as String?;
+    final totalComentarios = (widget.publicacion['total_comentarios'] as int?) ?? 0;
+
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false,
+        barrierColor: Colors.black,
+        transitionDuration: const Duration(milliseconds: 220),
+        reverseTransitionDuration: const Duration(milliseconds: 180),
+        pageBuilder: (_, animation, __) => FadeTransition(
+          opacity: animation,
+          child: _VisorImagenPublicacion(
+            medios: widget.medios,
+            indiceInicial: indiceInicial,
+            isDark: widget.isDark,
+            fotoAutorUrl: fotoUrl,
+            nombreAutor: nombre,
+            contenido: contenido,
+            reaccionInicial: _reacciono,
+            totalInicial: _totalReacc,
+            totalComentarios: totalComentarios,
+            onReaccionar: widget.onReaccionar,
+            onComentar: widget.onComentar,
+            onVerReacciones: widget.onVerReacciones,
+            onAbrirPerfil: () {
+              Navigator.of(context).pop();
+              _abrirPerfilAutor();
+            },
+            onActualizarReaccion: (nuevoEstado, nuevoTotal) {
+              if (!mounted) return;
+              setState(() {
+                _reacciono  = nuevoEstado;
+                _totalReacc = nuevoTotal;
+              });
+            },
+          ),
+        ),
+      ),
+    );
   }
 
 
@@ -490,13 +550,16 @@ class _TarjetaPublicacionState extends State<TarjetaPublicacion> {
                 );
               }
 
-              return CachedNetworkImage(
-                imageUrl: url,
-                fit:      BoxFit.cover,
-                placeholder: (_, __) => Container(
-                  color: isDark ? const Color(0xFF2C2C2E) : Colors.black12,
+              return GestureDetector(
+                onTap: () => _abrirVisorImagen(i),
+                child: CachedNetworkImage(
+                  imageUrl: url,
+                  fit:      BoxFit.cover,
+                  placeholder: (_, __) => Container(
+                    color: isDark ? const Color(0xFF2C2C2E) : Colors.black12,
+                  ),
+                  errorWidget: (_, __, ___) => const Icon(CupertinoIcons.exclamationmark_triangle),
                 ),
-                errorWidget: (_, __, ___) => const Icon(CupertinoIcons.exclamationmark_triangle),
               );
             },
           ),
@@ -613,6 +676,356 @@ class _HojaMotivos extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// VISOR DE IMAGEN A PANTALLA COMPLETA
+//
+// Se abre al tocar una imagen del carrusel (los videos siguen yendo
+// directo a ReproductorVideo, sin pasar por aquí). Mantiene su
+// propio PageController posicionado en el índice tocado, para poder
+// seguir deslizando entre el resto de los medios de la publicación
+// sin cerrar el visor — si el usuario llega a un video dentro del
+// carrusel, se abre ReproductorVideo por encima, como de costumbre.
+//
+// Replica encabezado (avatar/nombre), texto de la publicación y la
+// fila de reaccionar/comentar para que se sienta como "la misma
+// publicación, más grande" y no como una vista aparte. El estado de
+// reacción es local a este widget pero se sincroniza de vuelta con
+// la tarjeta de origen vía onActualizarReaccion al hacer toggle.
+// ─────────────────────────────────────────────────────────────────
+
+class _VisorImagenPublicacion extends StatefulWidget {
+  final List<Map<String, dynamic>> medios;
+  final int indiceInicial;
+  final bool isDark;
+  final String fotoAutorUrl;
+  final String nombreAutor;
+  final String? contenido;
+  final bool reaccionInicial;
+  final int totalInicial;
+  final int totalComentarios;
+  final Future<void> Function(bool nuevoEstado) onReaccionar;
+  final VoidCallback onComentar;
+  final VoidCallback? onVerReacciones;
+  final VoidCallback onAbrirPerfil;
+  final void Function(bool nuevoEstado, int nuevoTotal) onActualizarReaccion;
+
+  const _VisorImagenPublicacion({
+    required this.medios,
+    required this.indiceInicial,
+    required this.isDark,
+    required this.fotoAutorUrl,
+    required this.nombreAutor,
+    required this.contenido,
+    required this.reaccionInicial,
+    required this.totalInicial,
+    required this.totalComentarios,
+    required this.onReaccionar,
+    required this.onComentar,
+    required this.onVerReacciones,
+    required this.onAbrirPerfil,
+    required this.onActualizarReaccion,
+  });
+
+  @override
+  State<_VisorImagenPublicacion> createState() => _VisorImagenPublicacionState();
+}
+
+class _VisorImagenPublicacionState extends State<_VisorImagenPublicacion> {
+  static const Color _accent = Color(0xFF007AFF);
+  static const Color _rojo   = Color(0xFFFF3B30);
+
+  late final _pageController = PageController(initialPage: widget.indiceInicial);
+  late int  _paginaActual = widget.indiceInicial;
+  late bool _reacciono    = widget.reaccionInicial;
+  late int  _totalReacc   = widget.totalInicial;
+  bool _guardando = false;
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  bool get _paginaActualEsImagen =>
+      widget.medios[_paginaActual]['tipo_medio'] != 'video';
+
+  Future<void> _toggleReaccion() async {
+    final estadoAnterior = _reacciono;
+    final totalAnterior  = _totalReacc;
+
+    setState(() {
+      _reacciono  = !_reacciono;
+      _totalReacc += _reacciono ? 1 : -1;
+    });
+    widget.onActualizarReaccion(_reacciono, _totalReacc);
+
+    try {
+      await widget.onReaccionar(_reacciono);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _reacciono  = estadoAnterior;
+        _totalReacc = totalAnterior;
+      });
+      widget.onActualizarReaccion(_reacciono, _totalReacc);
+    }
+  }
+
+  Future<void> _guardarImagenActual() async {
+    if (_guardando) return;
+    final url = resolverUrlMedio(widget.medios[_paginaActual]);
+
+    setState(() => _guardando = true);
+    try {
+      var tieneAcceso = await Gal.hasAccess();
+      if (!tieneAcceso) {
+        tieneAcceso = await Gal.requestAccess();
+      }
+      if (!tieneAcceso) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Necesitamos permiso para guardar en tu galería.')),
+        );
+        return;
+      }
+
+      final respuesta = await http.get(Uri.parse(url));
+      if (respuesta.statusCode != 200) {
+        throw Exception('Descarga falló con código ${respuesta.statusCode}');
+      }
+
+      await Gal.putImageBytes(
+        respuesta.bodyBytes,
+        name: 'itvh_${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Imagen guardada en tu galería.')),
+      );
+    } catch (e) {
+      debugPrint('_VisorImagenPublicacion – guardar imagen: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo guardar la imagen.')),
+      );
+    } finally {
+      if (mounted) setState(() => _guardando = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Column(
+          children: [
+            _encabezado(context),
+            Expanded(
+              child: Stack(
+                children: [
+                  PageView.builder(
+                    controller: _pageController,
+                    itemCount: widget.medios.length,
+                    onPageChanged: (i) => setState(() => _paginaActual = i),
+                    itemBuilder: (context, i) {
+                      final medio = widget.medios[i];
+                      final url = resolverUrlMedio(medio);
+                      final esVideo = medio['tipo_medio'] == 'video';
+
+                      if (esVideo) {
+                        return GestureDetector(
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => ReproductorVideo(url: url),
+                              ),
+                            );
+                          },
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              Container(color: Colors.black),
+                              const Center(
+                                child: Icon(CupertinoIcons.play_circle_fill,
+                                    size: 64, color: Colors.white70),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+
+                      return InteractiveViewer(
+                        minScale: 1,
+                        maxScale: 4,
+                        child: Center(
+                          child: CachedNetworkImage(
+                            imageUrl: url,
+                            fit: BoxFit.contain,
+                            errorWidget: (_, __, ___) => const Icon(
+                              CupertinoIcons.exclamationmark_triangle,
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  if (widget.medios.length > 1)
+                    Positioned(
+                      top: 8,
+                      left: 0,
+                      right: 0,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(widget.medios.length, (i) {
+                          final activo = i == _paginaActual;
+                          return AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            margin: const EdgeInsets.symmetric(horizontal: 3),
+                            width: activo ? 8 : 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: activo ? Colors.white : Colors.white38,
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          );
+                        }),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            _piePublicacion(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _encabezado(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+      child: Row(
+        children: [
+          GestureDetector(
+            onTap: widget.onAbrirPerfil,
+            behavior: HitTestBehavior.opaque,
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: _accent.withValues(alpha: 0.15),
+                  backgroundImage: widget.fotoAutorUrl.isNotEmpty
+                      ? CachedNetworkImageProvider(widget.fotoAutorUrl)
+                      : null,
+                  child: widget.fotoAutorUrl.isEmpty
+                      ? Icon(CupertinoIcons.person_fill, color: _accent, size: 16)
+                      : null,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  widget.nombreAutor,
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(),
+          if (_paginaActualEsImagen)
+            IconButton(
+              icon: _guardando
+                  ? const SizedBox(
+                width: 18, height: 18,
+                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+              )
+                  : const Icon(CupertinoIcons.arrow_down_to_line, color: Colors.white, size: 20),
+              onPressed: _guardando ? null : _guardarImagenActual,
+            ),
+          IconButton(
+            icon: const Icon(CupertinoIcons.xmark, color: Colors.white, size: 22),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _piePublicacion() {
+    final color = _reacciono ? _rojo : Colors.white70;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (widget.contenido != null && widget.contenido!.isNotEmpty) ...[
+            Text(
+              widget.contenido!,
+              style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.35),
+            ),
+            const SizedBox(height: 10),
+          ],
+          Row(
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: _toggleReaccion,
+                      borderRadius: BorderRadius.circular(10),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        child: Icon(
+                          _reacciono ? CupertinoIcons.heart_fill : CupertinoIcons.heart,
+                          size: 20,
+                          color: color,
+                        ),
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: widget.onVerReacciones,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+                      child: Text('$_totalReacc',
+                          style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 18),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: widget.onComentar,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    child: Row(
+                      children: [
+                        const Icon(CupertinoIcons.chat_bubble, size: 20, color: Colors.white70),
+                        const SizedBox(width: 6),
+                        Text('${widget.totalComentarios}',
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

@@ -19,6 +19,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../comunidad_aspirantes/hoja_comentarios.dart';
 import '../comunidad_aspirantes/hoja_reacciones.dart';
@@ -288,6 +289,18 @@ class _PerfilPublicoAspiranteState extends State<PerfilPublicoAspirante> {
     HojaReacciones.mostrar(context, publicacionId: publicacionId, isDark: widget.isDark);
   }
 
+  Future<void> _abrirRedSocial(String? url) async {
+    if (url == null || url.isEmpty) return;
+    var normalizado = url.trim();
+    if (!normalizado.startsWith('http://') && !normalizado.startsWith('https://')) {
+      normalizado = 'https://$normalizado';
+    }
+    final uri = Uri.tryParse(normalizado);
+    if (uri != null) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
 
   // ─────────────────────────────────────────────────────────────
   // BUILD
@@ -334,6 +347,7 @@ class _PerfilPublicoAspiranteState extends State<PerfilPublicoAspirante> {
                 mostrarBotonSeguir: !_esMiPropioPerfil,
                 actualizandoSeguir: _actualizandoSeguir,
                 onAlternarSeguir: _alternarSeguir,
+                onAbrirRedSocial: _abrirRedSocial,
                 isDark: isDark,
               );
             }
@@ -410,6 +424,7 @@ class _TarjetaPerfilPublico extends StatelessWidget {
   final bool mostrarBotonSeguir;
   final bool actualizandoSeguir;
   final VoidCallback onAlternarSeguir;
+  final Future<void> Function(String? url) onAbrirRedSocial;
   final bool isDark;
 
   const _TarjetaPerfilPublico({
@@ -419,6 +434,7 @@ class _TarjetaPerfilPublico extends StatelessWidget {
     required this.mostrarBotonSeguir,
     required this.actualizandoSeguir,
     required this.onAlternarSeguir,
+    required this.onAbrirRedSocial,
     required this.isDark,
   });
 
@@ -439,6 +455,11 @@ class _TarjetaPerfilPublico extends StatelessWidget {
     final fotoUrl = p != null ? resolverUrlPerfil(p) : '';
     final seguidores = (p?['total_seguidores'] as int?) ?? 0;
     final seguidos = (p?['total_seguidos'] as int?) ?? 0;
+    final instagram = p?['instagram_url'] as String?;
+    final facebook = p?['facebook_url'] as String?;
+    final tiktok = p?['tiktok_url'] as String?;
+    final hayRedes = [instagram, facebook, tiktok].any((r) => r != null && r.isNotEmpty);
+    final heroTag = 'foto_perfil_${p?['id'] ?? 'publico'}';
 
     return Container(
       width: double.infinity,
@@ -451,22 +472,30 @@ class _TarjetaPerfilPublico extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Container(
-            width: 88,
-            height: 88,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: _accent, width: 2.5),
-              color: bgCard,
-            ),
-            child: ClipOval(
-              child: fotoUrl.isNotEmpty
-                  ? Image.network(
-                fotoUrl,
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
-              )
-                  : Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
+          GestureDetector(
+            onTap: fotoUrl.isEmpty
+                ? null
+                : () => _mostrarFotoPerfil(context, url: fotoUrl, heroTag: heroTag),
+            child: Hero(
+              tag: heroTag,
+              child: Container(
+                width: 88,
+                height: 88,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: _accent, width: 2.5),
+                  color: bgCard,
+                ),
+                child: ClipOval(
+                  child: fotoUrl.isNotEmpty
+                      ? Image.network(
+                    fotoUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
+                  )
+                      : Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -510,6 +539,22 @@ class _TarjetaPerfilPublico extends StatelessWidget {
               ),
             ],
           ),
+          if (hayRedes) ...[
+            const SizedBox(height: 16),
+            Divider(height: 0.5, thickness: 0.5, color: divColor),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (instagram != null && instagram.isNotEmpty)
+                  _BotonRedSocial(asset: 'assets/icons/instagram.png', onTap: () => onAbrirRedSocial(instagram)),
+                if (facebook != null && facebook.isNotEmpty)
+                  _BotonRedSocial(asset: 'assets/icons/facebook.png', onTap: () => onAbrirRedSocial(facebook)),
+                if (tiktok != null && tiktok.isNotEmpty)
+                  _BotonRedSocial(asset: 'assets/icons/tiktok.png', onTap: () => onAbrirRedSocial(tiktok)),
+              ],
+            ),
+          ],
           if (mostrarBotonSeguir) ...[
             const SizedBox(height: 18),
             SizedBox(
@@ -559,22 +604,130 @@ class _EstadisticaItem extends StatelessWidget {
   final String label;
   final Color textPrimary;
   final Color textSec;
-  final VoidCallback? onTap;   // ← nuevo
+  final VoidCallback? onTap;
 
   const _EstadisticaItem({
     required this.valor, required this.label, required this.textPrimary, required this.textSec,
-    this.onTap,                 // ← nuevo
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(       // ← envuelve el Column existente
+    return GestureDetector(
       onTap: onTap,
       child: Column(
         children: [
           Text('$valor', style: TextStyle(color: textPrimary, fontSize: 17, fontWeight: FontWeight.w700)),
           const SizedBox(height: 2),
           Text(label, style: TextStyle(color: textSec, fontSize: 11.5)),
+        ],
+      ),
+    );
+  }
+}
+
+class _BotonRedSocial extends StatelessWidget {
+  final String asset;
+  final VoidCallback onTap;
+  const _BotonRedSocial({required this.asset, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: GestureDetector(
+        onTap: onTap,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: SizedBox(width: 32, height: 32, child: Image.asset(asset, fit: BoxFit.cover)),
+        ),
+      ),
+    );
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// VISOR DE FOTO DE PERFIL A PANTALLA COMPLETA
+//
+// Se abre al tocar el avatar en _TarjetaPerfilPublico. Hero +
+// PageRouteBuilder transparente (no showDialog) para que la
+// animación de "agrandar" se vea fluida; InteractiveViewer permite
+// pellizcar y hacer zoom. Se cierra tocando la imagen/fondo o con
+// el botón de la esquina.
+// ─────────────────────────────────────────────────────────────────
+
+void _mostrarFotoPerfil(
+    BuildContext context, {
+      required String url,
+      required Object heroTag,
+    }) {
+  if (url.isEmpty) return;
+  Navigator.of(context).push(
+    PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.black,
+      transitionDuration: const Duration(milliseconds: 220),
+      reverseTransitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (context, animation, __) {
+        return FadeTransition(
+          opacity: animation,
+          child: _PantallaFotoPerfil(url: url, heroTag: heroTag),
+        );
+      },
+    ),
+  );
+}
+
+class _PantallaFotoPerfil extends StatelessWidget {
+  final String url;
+  final Object heroTag;
+
+  const _PantallaFotoPerfil({required this.url, required this.heroTag});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () => Navigator.of(context).pop(),
+              behavior: HitTestBehavior.opaque,
+              child: Center(
+                child: Hero(
+                  tag: heroTag,
+                  child: InteractiveViewer(
+                    minScale: 1,
+                    maxScale: 4,
+                    child: Image.network(
+                      url,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const Icon(
+                        CupertinoIcons.person_fill,
+                        color: Colors.white24,
+                        size: 100,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: Align(
+                alignment: Alignment.topRight,
+                child: IconButton(
+                  icon: const Icon(CupertinoIcons.xmark_circle_fill,
+                      color: Colors.white70, size: 30),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );

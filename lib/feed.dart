@@ -18,6 +18,14 @@
 //   • Todo alimentado por un canal de Supabase Realtime suscrito a
 //     la tabla `notificaciones` filtrado por destinatario_id.
 //
+// NUEVO: navegación de "back" estilo Facebook/Instagram —
+//   • Si el gesto/botón de retroceso ocurre estando en Mi Perfil o
+//     UbicaTec, regresa a la pestaña Comunidad en vez de salir.
+//   • Si ya estás en Comunidad, exige doble toque dentro de una
+//     ventana de 2 segundos para cerrar la app (con SnackBar de aviso
+//     en el primer toque). Ver PopScope en build() y
+//     _ultimoToqueBack / _ventanaDobleBack.
+//
 // Responsabilidades:
 //   • Renderizar el TabBar con 3 pestañas fijas, propias del perfil
 //     de aspirante (no hay rol admin en esta app):
@@ -64,6 +72,7 @@ import 'dart:async';
 import 'package:aspirantes_itvh_app/ubica_tecnm/ubica_tecnm_itvh.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/material.dart';
@@ -110,6 +119,13 @@ class _FeedAspirantesState extends State<FeedAspirantes>
   // superior. Null = banner oculto.
   Map<String, dynamic>? _bannerData;
   Timer? _bannerTimer;
+
+  // ── Doble toque para salir (estilo Facebook) ───────────────────
+  // Guarda el momento del último toque de "back" estando ya en la
+  // pestaña Comunidad. Si el segundo toque llega dentro de la
+  // ventana de tolerancia, se permite el pop real (salir de la app).
+  DateTime? _ultimoToqueBack;
+  static const _ventanaDobleBack = Duration(seconds: 2);
 
   // Pestañas fijas de la identidad "Aspirantes ITVH".
   // A diferencia de Comunidad ITVH, aquí no existe rol admin,
@@ -181,6 +197,48 @@ class _FeedAspirantesState extends State<FeedAspirantes>
     if (index == null || !mounted) return;
     _tabController.animateTo(index);
     irATabNotifier.value = null;
+  }
+
+
+  // ─────────────────────────────────────────────────────────────
+  // NAVEGACIÓN DE "BACK" ESTILO FACEBOOK/INSTAGRAM
+  // ─────────────────────────────────────────────────────────────
+
+  /// Maneja el gesto/botón de retroceso del sistema:
+  ///   • Si NO estamos en la pestaña Comunidad (índice 0), regresa
+  ///     ahí en vez de salir de la app.
+  ///   • Si YA estamos en Comunidad, exige un segundo toque dentro
+  ///     de _ventanaDobleBack para salir realmente; en el primer
+  ///     toque solo muestra un SnackBar de aviso.
+  void _manejarBack(bool didPop, dynamic result) {
+    if (didPop) return; // el pop real ya ocurrió, nada más que hacer
+
+    // Caso 1: no estamos en Comunidad → regresamos a Comunidad
+    // en vez de salir, igual que Facebook/Instagram.
+    if (_currentTabIndex != 0) {
+      _tabController.animateTo(0);
+      return;
+    }
+
+    // Caso 2: ya estamos en Comunidad → exigimos doble toque.
+    final ahora = DateTime.now();
+    final dentroDeVentana = _ultimoToqueBack != null &&
+        ahora.difference(_ultimoToqueBack!) < _ventanaDobleBack;
+
+    if (dentroDeVentana) {
+      // Segundo toque a tiempo → sí salimos de la app.
+      SystemNavigator.pop();
+    } else {
+      // Primer toque → avisamos y reiniciamos la ventana.
+      _ultimoToqueBack = ahora;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Toca de nuevo para salir'),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
 
@@ -400,167 +458,175 @@ class _FeedAspirantesState extends State<FeedAspirantes>
         final divColor = isDark ? Colors.white10 : Colors.black12;
         const accent   = Color(0xFF007AFF);
 
-        return Stack(
-          children: [
-            Scaffold(
-              key: _scaffoldKey,
-              backgroundColor: isDark ? Colors.black : const Color(0xFFF2F2F7),
+        return PopScope(
+          // El pop real (salir de la app) solo se evalúa dentro de
+          // _manejarBack: nunca dejamos que Flutter lo haga solo,
+          // porque necesitamos decidir entre "cambiar de tab" y
+          // "pedir doble toque" según _currentTabIndex.
+          canPop: false,
+          onPopInvokedWithResult: _manejarBack,
+          child: Stack(
+            children: [
+              Scaffold(
+                key: _scaffoldKey,
+                backgroundColor: isDark ? Colors.black : const Color(0xFFF2F2F7),
 
-              drawer: _buildDrawer(isDark, bgCard, divColor, textPrimary, accent),
+                drawer: _buildDrawer(isDark, bgCard, divColor, textPrimary, accent),
 
-              appBar: AppBar(
-                toolbarHeight: 70,
-                backgroundColor: isDark ? Colors.black : Colors.white,
-                elevation: 0,
-                scrolledUnderElevation: 0.5,
-                leading: IconButton(
-                  icon: Icon(CupertinoIcons.line_horizontal_3,
-                      color: textPrimary, size: 22),
-                  onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-                ),
-                titleSpacing: 0,
-                // Offset vertical para alinear visualmente el logo con los íconos
-                // del AppBar, compensando el padding interno del widget Image.
-                title: Transform.translate(
-                  offset: const Offset(0, -6),
-                  child: Image.asset(
-                    isDark
-                        ? 'assets/images/appbar_modo_oscuro.png'
-                        : 'assets/images/appbar_modo_claro.png',
-                    key: ValueKey(isDark), // Fuerza rebuild al cambiar tema.
-                    height: 33,
-                    fit: BoxFit.contain,
+                appBar: AppBar(
+                  toolbarHeight: 70,
+                  backgroundColor: isDark ? Colors.black : Colors.white,
+                  elevation: 0,
+                  scrolledUnderElevation: 0.5,
+                  leading: IconButton(
+                    icon: Icon(CupertinoIcons.line_horizontal_3,
+                        color: textPrimary, size: 22),
+                    onPressed: () => _scaffoldKey.currentState?.openDrawer(),
                   ),
-                ),
-                centerTitle: false,
-                actions: [
-                  // Nota: la campanita de notificaciones YA NO vive aquí —
-                  // se quitó para no duplicar la que ya existe en el
-                  // encabezado de ComunidadAspirantes (page_home.dart).
-                  // El conteo (_notificacionesNoLeidas) y la suscripción
-                  // Realtime se conservan sin cambios: siguen alimentando
-                  // el banner deslizante y quedan disponibles por si más
-                  // adelante se quiere mostrar el badge en otro lugar
-                  // (p. ej. sobre esa misma campanita de page_home.dart).
+                  titleSpacing: 0,
+                  // Offset vertical para alinear visualmente el logo con los íconos
+                  // del AppBar, compensando el padding interno del widget Image.
+                  title: Transform.translate(
+                    offset: const Offset(0, -6),
+                    child: Image.asset(
+                      isDark
+                          ? 'assets/images/appbar_modo_oscuro.png'
+                          : 'assets/images/appbar_modo_claro.png',
+                      key: ValueKey(isDark), // Fuerza rebuild al cambiar tema.
+                      height: 33,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                  centerTitle: false,
+                  actions: [
+                    // Nota: la campanita de notificaciones YA NO vive aquí —
+                    // se quitó para no duplicar la que ya existe en el
+                    // encabezado de ComunidadAspirantes (page_home.dart).
+                    // El conteo (_notificacionesNoLeidas) y la suscripción
+                    // Realtime se conservan sin cambios: siguen alimentando
+                    // el banner deslizante y quedan disponibles por si más
+                    // adelante se quiere mostrar el badge en otro lugar
+                    // (p. ej. sobre esa misma campanita de page_home.dart).
 
-                  // Avatar: muestra la foto real del usuario si ya cargó
-                  // (_fotoUrl != null); si no, cae al ícono genérico de
-                  // persona — mismo comportamiento mientras _fotoUrl está
-                  // en null (cargando o sin foto) que si Image.network
-                  // falla al mostrarla (errorBuilder).
-                  Padding(
-                    padding: const EdgeInsets.only(right: 14),
-                    child: GestureDetector(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const EditarPerfilAspirante()),
-                      ).then((_) => _cargarFotoPerfil()), // refresca al volver
-                      child: Container(
-                        width: 34,
-                        height: 34,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: accent.withValues(alpha: 0.35),
-                            width: 1.5,
+                    // Avatar: muestra la foto real del usuario si ya cargó
+                    // (_fotoUrl != null); si no, cae al ícono genérico de
+                    // persona — mismo comportamiento mientras _fotoUrl está
+                    // en null (cargando o sin foto) que si Image.network
+                    // falla al mostrarla (errorBuilder).
+                    Padding(
+                      padding: const EdgeInsets.only(right: 14),
+                      child: GestureDetector(
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const EditarPerfilAspirante()),
+                        ).then((_) => _cargarFotoPerfil()), // refresca al volver
+                        child: Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: accent.withValues(alpha: 0.35),
+                              width: 1.5,
+                            ),
+                          ),
+                          child: ClipOval(
+                            child: (_fotoUrl != null && _fotoUrl!.isNotEmpty)
+                                ? Image.network(
+                              _fotoUrl!,
+                              fit: BoxFit.cover,
+                              width: 34,
+                              height: 34,
+                              errorBuilder: (_, __, ___) => _avatarPlaceholder(accent),
+                              loadingBuilder: (context, child, progress) {
+                                if (progress == null) return child;
+                                return _avatarPlaceholder(accent);
+                              },
+                            )
+                                : _avatarPlaceholder(accent),
                           ),
                         ),
-                        child: ClipOval(
-                          child: (_fotoUrl != null && _fotoUrl!.isNotEmpty)
-                              ? Image.network(
-                            _fotoUrl!,
-                            fit: BoxFit.cover,
-                            width: 34,
-                            height: 34,
-                            errorBuilder: (_, __, ___) => _avatarPlaceholder(accent),
-                            loadingBuilder: (context, child, progress) {
-                              if (progress == null) return child;
-                              return _avatarPlaceholder(accent);
-                            },
-                          )
-                              : _avatarPlaceholder(accent),
-                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
 
-                // ── TabBar estilo segmented control ───────────────────
-                bottom: PreferredSize(
-                  preferredSize: const Size.fromHeight(54),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: isDark
-                            ? const Color(0xFF2C2C2E)
-                            : const Color(0xFFE5E5EA),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.all(3),
-                      child: TabBar(
-                        controller:    _tabController,
-                        dividerColor:  Colors.transparent,
-                        indicatorSize: TabBarIndicatorSize.tab,
-                        indicator: BoxDecoration(
-                          color: isDark ? const Color(0xFF3A3A3C) : Colors.white,
-                          borderRadius: BorderRadius.circular(9),
-                          boxShadow: isDark
-                              ? null
-                              : [
-                            BoxShadow(
-                              color:      Colors.black.withValues(alpha: 0.08),
-                              blurRadius: 4,
-                              offset:     const Offset(0, 1),
-                            ),
-                          ],
+                  // ── TabBar estilo segmented control ───────────────────
+                  bottom: PreferredSize(
+                    preferredSize: const Size.fromHeight(54),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: isDark
+                              ? const Color(0xFF2C2C2E)
+                              : const Color(0xFFE5E5EA),
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        labelColor:           const Color(0xFF007AFF),
-                        unselectedLabelColor: isDark ? Colors.white38 : Colors.black38,
-                        overlayColor:         const WidgetStatePropertyAll(Colors.transparent),
-                        splashFactory:        NoSplash.splashFactory,
-                        tabs: List.generate(_tabs.length, (i) {
-                          final t = _tabs[i];
-                          return Tab(
-                            icon: Icon(
-                              _currentTabIndex == i ? t.activeIcon : t.icon,
-                              size: 22,
-                            ),
-                          );
-                        }),
+                        padding: const EdgeInsets.all(3),
+                        child: TabBar(
+                          controller:    _tabController,
+                          dividerColor:  Colors.transparent,
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          indicator: BoxDecoration(
+                            color: isDark ? const Color(0xFF3A3A3C) : Colors.white,
+                            borderRadius: BorderRadius.circular(9),
+                            boxShadow: isDark
+                                ? null
+                                : [
+                              BoxShadow(
+                                color:      Colors.black.withValues(alpha: 0.08),
+                                blurRadius: 4,
+                                offset:     const Offset(0, 1),
+                              ),
+                            ],
+                          ),
+                          labelColor:           const Color(0xFF007AFF),
+                          unselectedLabelColor: isDark ? Colors.white38 : Colors.black38,
+                          overlayColor:         const WidgetStatePropertyAll(Colors.transparent),
+                          splashFactory:        NoSplash.splashFactory,
+                          tabs: List.generate(_tabs.length, (i) {
+                            final t = _tabs[i];
+                            return Tab(
+                              icon: Icon(
+                                _currentTabIndex == i ? t.activeIcon : t.icon,
+                                size: 22,
+                              ),
+                            );
+                          }),
+                        ),
                       ),
                     ),
                   ),
                 ),
+
+                // TabBarView sincronizado con el mismo controller del TabBar.
+                // Los tres cuerpos son placeholders visuales, sin datos reales
+                // hasta que se defina la lógica/backend de esta app.
+                body: TabBarView(
+                  controller: _tabController,
+                  children: [
+                    // ── Tab 1: Comunidad Nuevo Ingreso ──────────────────
+                    ComunidadAspirantes(
+                      isDark: isDark,
+                      notificacionesNoLeidas: _notificacionesNoLeidas,
+                      onAbrirNotificaciones: () => _abrirNotificaciones(isDark),
+                    ),
+
+                    // ── Tab 2: Mi Perfil Aspirante ───────────────────────
+                    MiPerfilAspirante(isDark: isDark),
+
+                    const UbicaTecScreen(),
+                  ],
+                ),
               ),
 
-              // TabBarView sincronizado con el mismo controller del TabBar.
-              // Los tres cuerpos son placeholders visuales, sin datos reales
-              // hasta que se defina la lógica/backend de esta app.
-              body: TabBarView(
-                controller: _tabController,
-                children: [
-                  // ── Tab 1: Comunidad Nuevo Ingreso ──────────────────
-                  ComunidadAspirantes(
-                    isDark: isDark,
-                    notificacionesNoLeidas: _notificacionesNoLeidas,
-                    onAbrirNotificaciones: () => _abrirNotificaciones(isDark),
-                  ),
-
-                  // ── Tab 2: Mi Perfil Aspirante ───────────────────────
-                  MiPerfilAspirante(isDark: isDark),
-
-                  const UbicaTecScreen(),
-                ],
-              ),
-            ),
-
-            // ── Banner de notificación estilo iOS ───────────────────
-            // Vive encima del Scaffold en el mismo Stack, así que no
-            // depende del árbol de navegación interno y se ve sin
-            // importar en qué tab esté el usuario.
-            _bannerNotificacion(isDark, textPrimary, bgCard),
-          ],
+              // ── Banner de notificación estilo iOS ───────────────────
+              // Vive encima del Scaffold en el mismo Stack, así que no
+              // depende del árbol de navegación interno y se ve sin
+              // importar en qué tab esté el usuario.
+              _bannerNotificacion(isDark, textPrimary, bgCard),
+            ],
+          ),
         );
       },
     );

@@ -10,17 +10,36 @@
 // index == 0), por eso ahora permanece estático mientras el feed
 // se desplaza debajo.
 //
-// NUEVO: badge de notificaciones no leídas sobre la campanita del
+// Badge de notificaciones no leídas sobre la campanita del
 // encabezado. El conteo (notificacionesNoLeidas) y la navegación
 // (onAbrirNotificaciones) llegan como parámetros desde feed.dart —
 // esta pantalla ya NO trae su propia lógica de conteo/Realtime, solo
 // pinta lo que le llega y delega la navegación hacia arriba para que
 // el conteo se refresque justo al volver de PaginaNotificaciones.
 //
+// OPTIMIZACIÓN (v2):
+//   Antes, por cada página de 10 posts se hacían DOS peticiones:
+//     1) select() de publicaciones
+//     2) select() aparte a "reacciones" para saber cuáles ya
+//        reaccionó el usuario actual (.inFilter('publicacion_id', ids))
+//   Ahora se hace en UNA sola petición: se embebe "reacciones" en el
+//   mismo select() con un LEFT JOIN filtrado por usuario_id:
+//
+//     reacciones!left ( usuario_id )
+//     ...
+//     .eq('reacciones.usuario_id', userId)
+//
+//   El "!left" evita que PostgREST convierta esto en INNER JOIN (lo
+//   cual excluiría posts sin ninguna reacción tuya); el .eq() sobre
+//   "reacciones.usuario_id" filtra el JOIN en sí, no la tabla padre,
+//   así que cada post trae en su lista "reacciones" o bien un
+//   elemento (si ya reaccionaste) o una lista vacía (si no).
+//   Resultado: mismo número de round-trips que antes de agregar la
+//   feature de reacciones — se elimina el query extra por completo.
+//
 // Responsabilidades:
-//   - Cargar publicaciones paginadas (10 en 10) con autor, carrera
-//     y medios ya embebidos vía el join de Supabase.
-//   - Saber qué publicaciones ya reaccionó el usuario actual.
+//   - Cargar publicaciones paginadas (10 en 10) con autor, carrera,
+//     medios y "¿ya reaccioné?" ya embebidos en un solo select.
 //   - Persistir reacciones (onReaccionar) y abrir CrearPublicacion.
 //   - Navegar a búsqueda de usuarios; delegar la navegación a
 //     notificaciones hacia feed.dart vía onAbrirNotificaciones.
@@ -117,8 +136,15 @@ class _ComunidadAspirantesState extends State<ComunidadAspirantes> {
     try {
       final desde = inicial ? 0 : _publicaciones.length;
       final hasta = desde + _pageSize - 1;
+      final userId = Supabase.instance.client.auth.currentUser?.id;
 
-      final data = await Supabase.instance.client
+      // ── Un solo select(): publicaciones + autor + carrera + medios
+      // + "¿ya reaccioné?" (left join filtrado por usuario_id). ──
+      //
+      // Si userId es null (no debería pasar en esta pantalla, pero
+      // por seguridad), se omite el filtro de reacciones y cada post
+      // simplemente vendrá con reacciones: [] — no revienta nada.
+      var query = Supabase.instance.client
           .from('publicaciones')
           .select('''
             id, contenido, tipo, creado_en, total_reacciones, total_comentarios,
@@ -127,40 +153,42 @@ class _ComunidadAspirantesState extends State<ComunidadAspirantes> {
               nombre, nombre_usuario, cdn_foto_perfil,
               carreras ( nombre )
             ),
-            publicacion_medios ( id, cdn_url, url, tipo_medio, orden )
+            publicacion_medios ( id, cdn_url, url, tipo_medio, orden ),
+            reacciones!left ( usuario_id )
           ''')
-          .eq('esta_suspendida', false)
+          .eq('esta_suspendida', false);
+
+      if (userId != null) {
+        // Filtra el JOIN (no la tabla padre): cada post trae solo la
+        // fila de reacciones que coincide con este usuario, si existe.
+        query = query.eq('reacciones.usuario_id', userId);
+      }
+
+      final data = await query
           .order('creado_en', ascending: false)
           .range(desde, hasta);
 
       final nuevos = List<Map<String, dynamic>>.from(data as List);
 
-      // Averigua cuáles de estos posts ya tienen reacción del usuario actual
-      if (nuevos.isNotEmpty) {
-        final userId = Supabase.instance.client.auth.currentUser?.id;
-        if (userId != null) {
-          final ids = nuevos.map((p) => p['id'] as String).toList();
-          final reacciones = await Supabase.instance.client
-              .from('reacciones')
-              .select('publicacion_id')
-              .eq('usuario_id', userId)
-              .inFilter('publicacion_id', ids);
-
-          for (final r in (reacciones as List)) {
-            _misReacciones.add(r['publicacion_id'] as String);
-          }
-        }
-      }
-
       if (!mounted) return;
       setState(() {
         _publicaciones.addAll(nuevos);
         for (final post in nuevos) {
+          final postId = post['id'] as String;
+
           final medios = List<Map<String, dynamic>>.from(
               post['publicacion_medios'] as List? ?? []);
           medios.sort((a, b) =>
               ((a['orden'] as int?) ?? 0).compareTo((b['orden'] as int?) ?? 0));
-          _mediosPorPost[post['id'] as String] = medios;
+          _mediosPorPost[postId] = medios;
+
+          // Viene embebido: lista con 1 elemento si ya reaccionaste,
+          // vacía si no. Ya no hace falta una consulta aparte.
+          final reaccionesPropias =
+              post['reacciones'] as List? ?? const [];
+          if (reaccionesPropias.isNotEmpty) {
+            _misReacciones.add(postId);
+          }
         }
         _hayMas = nuevos.length == _pageSize;
         _cargandoInicial = false;

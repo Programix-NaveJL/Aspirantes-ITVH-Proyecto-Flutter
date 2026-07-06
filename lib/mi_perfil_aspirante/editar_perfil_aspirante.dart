@@ -16,6 +16,15 @@
 // Theme-aware (isDarkNotifier) para ser consistente con el resto
 // de la app — a diferencia del original de Comunidad ITVH que
 // forzaba paleta oscura fija.
+//
+// FIX (jul 2026): al cerrar sesión, esta pantalla vive apilada
+// encima de AuthGate (Navigator.push). AuthGate escucha
+// onAuthStateChange y cambia a LoginScreen por debajo, pero esta
+// pantalla seguía tapándolo — quedaba "atorada" hasta hacer swipe-
+// back manual. Ahora _cerrarSesion() hace popUntil(isFirst) para
+// vaciar el stack, y el PopScope (que bloquea el pop para pedir
+// confirmación de "cambios sin guardar") se desactiva mientras se
+// está cerrando sesión intencionalmente.
 // ═════════════════════════════════════════════════════════════════
 
 import 'dart:io';
@@ -61,6 +70,11 @@ class _EditarPerfilAspiranteState extends State<EditarPerfilAspirante> {
 
   bool _isLoading = true;
   bool _isSaving  = false;
+
+  // Bandera para permitir el pop programático al cerrar sesión sin
+  // que el PopScope lo intercepte pidiendo confirmación de cambios
+  // sin guardar (ver _cerrarSesion()).
+  bool _cerrandoSesion = false;
 
   String  _nombreOriginal       = '';
   String  _usuarioOriginal      = '';
@@ -399,9 +413,20 @@ class _EditarPerfilAspiranteState extends State<EditarPerfilAspirante> {
     }
   }
 
-  /// Solo cierra la sesión — no navega manualmente. AuthGate
-  /// (main.dart) escucha onAuthStateChange y regresa solo a
-  /// LoginScreen, mismo patrón que en feed.dart.
+  /// Cierra la sesión y vacía el stack de navegación hasta la raíz.
+  ///
+  /// Antes solo se llamaba a signOut() y se confiaba en que
+  /// AuthGate (main.dart), que escucha onAuthStateChange, mostrara
+  /// LoginScreen automáticamente. Eso pasa, pero por DEBAJO de esta
+  /// pantalla — como se llegó aquí con Navigator.push, esta ruta se
+  /// queda apilada encima tapando el login hasta que el usuario
+  /// hace swipe-back manualmente.
+  ///
+  /// Fix: 1) se activa _cerrandoSesion para que el PopScope no
+  /// intercepte el pop pidiendo confirmación de "cambios sin
+  /// guardar" (no aplica, estamos cerrando sesión a propósito).
+  /// 2) tras el signOut(), popUntil(isFirst) vacía todo el stack y
+  /// deja visible la raíz, donde AuthGate ya conmutó a LoginScreen.
   Future<void> _cerrarSesion() async {
     final confirmar = await showCupertinoDialog<bool>(
       context: context,
@@ -422,7 +447,16 @@ class _EditarPerfilAspiranteState extends State<EditarPerfilAspirante> {
       ),
     );
     if (confirmar != true) return;
+
+    setState(() => _cerrandoSesion = true);
+
     await Supabase.instance.client.auth.signOut();
+
+    if (!mounted) return;
+
+    // Vacía todo el stack hasta la raíz, donde AuthGate ya muestra
+    // LoginScreen gracias a onAuthStateChange.
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
 
@@ -568,7 +602,10 @@ class _EditarPerfilAspiranteState extends State<EditarPerfilAspirante> {
         )['nombre'] as String?;
 
         return PopScope(
-          canPop: false,
+          // Se permite el pop libremente mientras se está cerrando
+          // sesión (popUntil lo requiere); en cualquier otro caso
+          // se intercepta para preguntar por cambios sin guardar.
+          canPop: _cerrandoSesion,
           onPopInvokedWithResult: (didPop, _) async {
             if (didPop) return;
             final salir = await _confirmarSalida();

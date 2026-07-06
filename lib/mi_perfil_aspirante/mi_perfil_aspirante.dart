@@ -468,6 +468,7 @@ class _TarjetaPerfil extends StatelessWidget {
     final facebook = p?['facebook_url'] as String?;
     final tiktok = p?['tiktok_url'] as String?;
     final hayRedes = [instagram, facebook, tiktok].any((r) => r != null && r.isNotEmpty);
+    final heroTag = 'foto_perfil_${p?['id'] ?? 'mi_perfil'}';
 
     return Container(
       width: double.infinity,
@@ -480,22 +481,30 @@ class _TarjetaPerfil extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Container(
-            width: 88,
-            height: 88,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: _accent, width: 2.5),
-              color: bgCard,
-            ),
-            child: ClipOval(
-              child: fotoUrl.isNotEmpty
-                  ? Image.network(
-                fotoUrl,
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
-              )
-                  : Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
+          GestureDetector(
+            onTap: fotoUrl.isEmpty
+                ? null
+                : () => _mostrarFotoPerfil(context, url: fotoUrl, heroTag: heroTag),
+            child: Hero(
+              tag: heroTag,
+              child: Container(
+                width: 88,
+                height: 88,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: _accent, width: 2.5),
+                  color: bgCard,
+                ),
+                child: ClipOval(
+                  child: fotoUrl.isNotEmpty
+                      ? Image.network(
+                    fotoUrl,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
+                  )
+                      : Icon(CupertinoIcons.person_fill, size: 44, color: textSec),
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -603,6 +612,93 @@ class _BotonRedSocial extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           child: SizedBox(width: 32, height: 32, child: Image.asset(asset, fit: BoxFit.cover)),
         ),
+      ),
+    );
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// VISOR DE FOTO DE PERFIL A PANTALLA COMPLETA
+//
+// Se abre al tocar el avatar en _TarjetaPerfil. Hero + PageRouteBuilder
+// transparente (no showDialog) para que la animación de "agrandar"
+// se vea fluida; InteractiveViewer permite pellizcar y hacer zoom.
+// Se cierra tocando la imagen/fondo o con el botón de la esquina.
+// ─────────────────────────────────────────────────────────────────
+
+void _mostrarFotoPerfil(
+    BuildContext context, {
+      required String url,
+      required Object heroTag,
+    }) {
+  if (url.isEmpty) return;
+  Navigator.of(context).push(
+    PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.black,
+      transitionDuration: const Duration(milliseconds: 220),
+      reverseTransitionDuration: const Duration(milliseconds: 180),
+      pageBuilder: (context, animation, __) {
+        return FadeTransition(
+          opacity: animation,
+          child: _PantallaFotoPerfil(url: url, heroTag: heroTag),
+        );
+      },
+    ),
+  );
+}
+
+class _PantallaFotoPerfil extends StatelessWidget {
+  final String url;
+  final Object heroTag;
+
+  const _PantallaFotoPerfil({required this.url, required this.heroTag});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () => Navigator.of(context).pop(),
+              behavior: HitTestBehavior.opaque,
+              child: Center(
+                child: Hero(
+                  tag: heroTag,
+                  child: InteractiveViewer(
+                    minScale: 1,
+                    maxScale: 4,
+                    child: Image.network(
+                      url,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => const Icon(
+                        CupertinoIcons.person_fill,
+                        color: Colors.white24,
+                        size: 100,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: Align(
+                alignment: Alignment.topRight,
+                child: IconButton(
+                  icon: const Icon(CupertinoIcons.xmark_circle_fill,
+                      color: Colors.white70, size: 30),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

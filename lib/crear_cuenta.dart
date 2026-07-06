@@ -7,8 +7,7 @@
 // permite cualquier correo personal, y NO se exige confirmación de
 // correo (Supabase Auth → Providers → Email → "Confirm email" está
 // desactivado). La validación de identidad recae únicamente en:
-//   • Número de ficha de aspirante (6 dígitos, debe iniciar en "26"
-//     — ciclo de ingreso 2026, ej. 260000–269999). Declarado por el
+//   • Número de ficha de aspirante (6 dígitos). Declarado por el
 //     usuario, sin validación contra una lista oficial por ahora.
 //
 // Flujo de registro:
@@ -194,11 +193,10 @@ class _RegisterScreenState extends State<RegisterScreen>
       return;
     }
 
-    // Número de ficha de aspirante: 6 dígitos, debe empezar con "26"
-    // (ciclo de ingreso 2026). Ej. 260000–269999.
-    final regexFicha = RegExp(r'^26\d{4}$');
+    // Número de ficha de aspirante: solo se valida que sean 6 dígitos.
+    final regexFicha = RegExp(r'^\d{6}$');
     if (!regexFicha.hasMatch(ficha)) {
-      _showError('El número de ficha debe tener 6.');
+      _showError('El número de ficha debe tener 6 dígitos.');
       return;
     }
 
@@ -286,7 +284,7 @@ class _RegisterScreenState extends State<RegisterScreen>
       // Con "Confirm email" desactivado en Supabase, signUp() siempre
       // regresa sesión activa de inmediato — no depende de que el
       // usuario confirme nada por correo. La validación de identidad
-      // ahora recae solo en el número de ficha (6 dígitos, inicia en 26).
+      // ahora recae solo en el número de ficha (6 dígitos).
       if (res.session != null) {
         Navigator.pushReplacementNamed(context, '/home');
       } else {
