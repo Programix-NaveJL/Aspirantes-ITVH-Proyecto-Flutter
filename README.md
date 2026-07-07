@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://programix-navejl.github.io/programix-navejl/logo_programix_navejl.png" alt="Programix NaveJL Logo" width="100">
+  <img src="https://programix-navejl.github.io/Programix-NaveJL-Pagina-Oficial/logo_programix_navejl.png" alt="Programix NaveJL Logo" width="100">
 </p>
 
 <p align="center">
