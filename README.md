@@ -27,25 +27,6 @@
 
 ---
 
-<p align="center">
-  <img src="https://programix-navejl.github.io/Programix-NaveJL-Pagina-Oficial/logo_programix_navejl.png" alt="Programix NaveJL Logo" width="140">
-</p>
-<p align="center">
-  <img src="https://programix-navejl.github.io/comunidad-itvh/imagenes/logo_comunidad_itvh.png" alt="Logo Jaguar ITVH" width="130">
-</p>
-
-<h1 align="center">Aspirantes ITVH · Proyecto Móvil</h1>
-
-<p align="center">
-  <strong>Aplicación Móvil Oficial Multiplataforma para el Proceso de Admisión</strong>
-</p>
-
-<p align="center">
-  Aplicación móvil e infraestructura de frontend construida en <strong>Flutter</strong>, adaptada de manera modular del ecosistema principal de <strong>Comunidad ITVH</strong>. Su objetivo es ofrecer una red social, perfiles interactivos y herramientas de geolocalización interna para acompañar a los nuevos estudiantes en su ingreso al TecNM Campus Villahermosa.
-</p>
-
----
-
 ### 🛠️ Stack Tecnológico Principal
 
 <p align="center">
