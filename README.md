@@ -2,7 +2,7 @@
   <img src="https://programix-navejl.github.io/Programix-NaveJL-Pagina-Oficial/logo_programix_navejl.png" alt="Programix NaveJL Logo" width="140">
 </p>
 <p align="center">
-  <img src="[https://programix-navejl.github.io/comunidad-itvh/imagenes/logo_comunidad_itvh.png](https://programix-navejl.github.io/Aspirantes-ITVH-Cumplimiento-Legal/imagenes/logo_comunidad_itvh.png)" alt="Logo Jaguar ITVH" width="130">
+  <img src="https://programix-navejl.github.io/Aspirantes-ITVH-Cumplimiento-Legal/imagenes/logo_comunidad_itvh.png" alt="Logo Jaguar ITVH" width="130">
 </p>
 
 <h1 align="center">Aspirantes ITVH · Proyecto Móvil</h1>
